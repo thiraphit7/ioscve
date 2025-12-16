@@ -18,6 +18,7 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #import <mach/mach.h>
+#import <mach/mach_vm.h>
 #import <mach/task_info.h>
 #import <CoreSpotlight/CoreSpotlight.h>
 #import <sys/stat.h>
@@ -32,6 +33,13 @@
 
 // IOKit
 #import <IOKit/IOKitLib.h>
+
+// IOKit port compatibility - kIOMasterPortDefault is deprecated on iOS
+// Use kIOMainPortDefault if available, otherwise use MACH_PORT_NULL
+#ifndef kIOMainPortDefault
+#define kIOMainPortDefault MACH_PORT_NULL
+#endif
+#define IOKIT_PORT kIOMainPortDefault
 
 // XPC types and function pointers (loaded dynamically)
 typedef void* xpc_connection_t;
@@ -1826,7 +1834,7 @@ static void load_xpc_symbols(void) {
         mach_vm_size_t size = 0;
 
         // Selector 10: s_map
-        kr = IOConnectMapMemory64(conn, surfaceID, mach_task_self(),
+        kr = IOConnectMapMemory64(conn, (uint32_t)surfaceID, mach_task_self(),
             &address, &size, kIOMapAnywhere);
         if (kr == KERN_SUCCESS) {
             [log appendFormat:@"[!] Mapped at 0x%llx (size: 0x%llx)\n", address, size];
@@ -1835,7 +1843,7 @@ static void load_xpc_symbols(void) {
             if (address != 0) {
                 memset((void *)address, 0x42, MIN(256, size));
                 [log appendString:@"    Wrote test pattern\n"];
-                IOConnectUnmapMemory64(conn, surfaceID, mach_task_self(), address);
+                IOConnectUnmapMemory64(conn, (uint32_t)surfaceID, mach_task_self(), address);
             }
         } else {
             [log appendFormat:@"[-] Map failed: 0x%x\n", kr];
@@ -2104,7 +2112,7 @@ static void load_xpc_symbols(void) {
     int numDrivers = sizeof(drivers) / sizeof(drivers[0]);
 
     for (int d = 0; d < numDrivers; d++) {
-        io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
+        io_service_t service = IOServiceGetMatchingService(IOKIT_PORT,
             IOServiceMatching(drivers[d]));
 
         if (!service) {
@@ -2180,7 +2188,7 @@ static void load_xpc_symbols(void) {
     int numDrivers = sizeof(agxDrivers) / sizeof(agxDrivers[0]);
 
     for (int d = 0; d < numDrivers; d++) {
-        io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
+        io_service_t service = IOServiceGetMatchingService(IOKIT_PORT,
             IOServiceMatching(agxDrivers[d]));
 
         if (!service) {
@@ -2262,7 +2270,7 @@ static void load_xpc_symbols(void) {
     NSMutableString *log = [NSMutableString string];
     [log appendString:@"=== AppleKeyStore Deep Crypto Probe ===\n\n"];
 
-    io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
+    io_service_t service = IOServiceGetMatchingService(IOKIT_PORT,
         IOServiceMatching("AppleKeyStore"));
 
     if (!service) {
@@ -2568,7 +2576,7 @@ static void load_xpc_symbols(void) {
     [log appendString:@"\n[2] Kernel Panic Indicators:\n"];
 
     // Check nvram for panic info
-    io_registry_entry_t optionsRef = IORegistryEntryFromPath(kIOMasterPortDefault,
+    io_registry_entry_t optionsRef = IORegistryEntryFromPath(IOKIT_PORT,
         "IODeviceTree:/options");
 
     if (optionsRef) {
