@@ -590,7 +590,7 @@ static void load_xpc_symbols(void) {
 
             // Try to open user client
             io_connect_t connection;
-            kr = IOServiceOpen(service, mach_task_self(), 0, &connection);
+            kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &connection);
             if (kr == KERN_SUCCESS) {
                 [log appendFormat:@"    [!] Opened user client: 0x%x\n", connection];
                 IOServiceClose(connection);
@@ -712,8 +712,8 @@ static void load_xpc_symbols(void) {
     kern_return_t kr = task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&basic_info, &count);
 
     if (kr == KERN_SUCCESS) {
-        [log appendFormat:@"[+] Virtual size: %llu MB\n", basic_info.virtual_size / (1024 * 1024)];
-        [log appendFormat:@"[+] Resident size: %llu MB\n", basic_info.resident_size / (1024 * 1024)];
+        [log appendFormat:@"[+] Virtual size: %lu MB\n", (unsigned long)(basic_info.virtual_size / (1024 * 1024))];
+        [log appendFormat:@"[+] Resident size: %lu MB\n", (unsigned long)(basic_info.resident_size / (1024 * 1024))];
         [log appendFormat:@"[+] Suspend count: %d\n", basic_info.suspend_count];
     }
 
