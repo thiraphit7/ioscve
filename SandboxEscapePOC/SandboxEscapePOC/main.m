@@ -15,6 +15,9 @@
 #import <mach/mach.h>
 #import <CoreSpotlight/CoreSpotlight.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
+#import <dlfcn.h>
+#import <xpc/xpc.h>
 
 // Forward declarations
 @class AppDelegate;
