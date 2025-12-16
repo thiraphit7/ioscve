@@ -12,6 +12,7 @@
 		1A0000000000000000000003 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000021; };
 		1A0000000000000000000004 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000022; };
 		1A0000000000000000000005 /* CoreSpotlight.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000023; };
+		1A0000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000015; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +21,7 @@
 		1A0000000000000000000012 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		1A0000000000000000000013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A0000000000000000000014 /* entitlements.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = entitlements.plist; sourceTree = "<group>"; };
+		1A0000000000000000000015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1A0000000000000000000021 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		1A0000000000000000000022 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		1A0000000000000000000023 /* CoreSpotlight.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreSpotlight.framework; path = System/Library/Frameworks/CoreSpotlight.framework; sourceTree = SDKROOT; };
@@ -41,6 +43,7 @@
 				1A0000000000000000000011,
 				1A0000000000000000000012,
 				1A0000000000000000000013,
+				1A0000000000000000000015,
 			);
 			path = SandboxEscapePOC;
 			sourceTree = "<group>";
@@ -137,6 +140,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A0000000000000000000002,
+				1A0000000000000000000006,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
