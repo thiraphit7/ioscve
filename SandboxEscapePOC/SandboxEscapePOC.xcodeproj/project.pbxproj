@@ -14,6 +14,7 @@
 		1A0000000000000000000005 /* CoreSpotlight.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000023; };
 		1A0000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000015; };
 		1A0000000000000000000007 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000024; };
+		1A0000000000000000000008 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000025; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 		1A0000000000000000000022 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		1A0000000000000000000023 /* CoreSpotlight.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreSpotlight.framework; path = System/Library/Frameworks/CoreSpotlight.framework; sourceTree = SDKROOT; };
 		1A0000000000000000000024 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+		1A0000000000000000000025 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -57,6 +59,7 @@
 				1A0000000000000000000022,
 				1A0000000000000000000023,
 				1A0000000000000000000024,
+				1A0000000000000000000025,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -133,6 +136,7 @@
 				1A0000000000000000000004,
 				1A0000000000000000000005,
 				1A0000000000000000000007,
+				1A0000000000000000000008,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

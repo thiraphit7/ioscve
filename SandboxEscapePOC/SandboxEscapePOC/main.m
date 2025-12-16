@@ -16,6 +16,7 @@
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 #import <mach/mach.h>
 #import <mach/task_info.h>
 #import <CoreSpotlight/CoreSpotlight.h>
@@ -107,6 +108,13 @@ static void load_xpc_symbols(void) {
 + (NSString *)runKernelInfoLeak;
 + (NSString *)runFileDescriptorTricks;
 + (NSString *)runXPCServiceScan;
+
+// Advanced exploit methods
++ (NSString *)runIOKitAdvancedExploit;
++ (NSString *)runXPCFuzzing;
++ (NSString *)runMobileGestaltQueries;
++ (NSString *)runSpringBoardInteraction;
++ (NSString *)runEntitlementProbing;
 
 @end
 
@@ -958,6 +966,474 @@ static void load_xpc_symbols(void) {
     return log;
 }
 
+#pragma mark - IOKit Advanced Exploitation
+
++ (NSString *)runIOKitAdvancedExploit {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== IOKit Advanced Exploitation ===\n\n"];
+
+    mach_port_t masterPort = kIOMainPortDefault;
+
+    // AppleKeyStore probing
+    [log appendString:@"[*] Probing AppleKeyStore...\n"];
+    io_service_t keystore = IOServiceGetMatchingService(masterPort, IOServiceMatching("AppleKeyStore"));
+    if (keystore != IO_OBJECT_NULL) {
+        [log appendFormat:@"[+] Found AppleKeyStore: 0x%x\n", keystore];
+
+        io_connect_t conn;
+        kern_return_t kr = IOServiceOpen(keystore, mach_task_self(), 0, &conn);
+        if (kr == KERN_SUCCESS) {
+            [log appendFormat:@"[!] Opened AppleKeyStore connection: 0x%x\n", conn];
+
+            // Try external methods (selector probing)
+            uint64_t input[16] = {0};
+            uint64_t output[16] = {0};
+            uint32_t outputCnt = 16;
+
+            for (uint32_t selector = 0; selector < 20; selector++) {
+                kr = IOConnectCallMethod(conn, selector, input, 1, NULL, 0, output, &outputCnt, NULL, NULL);
+                if (kr != 0xe00002c2) { // kIOReturnBadArgument
+                    [log appendFormat:@"    Selector %u: 0x%x\n", selector, kr];
+                }
+            }
+            IOServiceClose(conn);
+        } else {
+            [log appendFormat:@"[-] Cannot open AppleKeyStore: 0x%x\n", kr];
+        }
+        IOObjectRelease(keystore);
+    } else {
+        [log appendString:@"[-] AppleKeyStore not found\n"];
+    }
+
+    // IOSurface probing
+    [log appendString:@"\n[*] Probing IOSurfaceRoot...\n"];
+    io_service_t surfaceRoot = IOServiceGetMatchingService(masterPort, IOServiceMatching("IOSurfaceRoot"));
+    if (surfaceRoot != IO_OBJECT_NULL) {
+        [log appendFormat:@"[+] Found IOSurfaceRoot: 0x%x\n", surfaceRoot];
+
+        io_connect_t conn;
+        kern_return_t kr = IOServiceOpen(surfaceRoot, mach_task_self(), 0, &conn);
+        if (kr == KERN_SUCCESS) {
+            [log appendFormat:@"[!] Opened IOSurfaceRoot connection: 0x%x\n", conn];
+
+            // Enumerate selectors
+            uint64_t scalarIn[8] = {0};
+            uint64_t scalarOut[8] = {0};
+            uint32_t scalarOutCnt = 8;
+
+            for (uint32_t sel = 0; sel < 15; sel++) {
+                kr = IOConnectCallScalarMethod(conn, sel, scalarIn, 0, scalarOut, &scalarOutCnt);
+                if (kr != 0xe00002c2 && kr != 0xe00002bc) {
+                    [log appendFormat:@"    Selector %u: 0x%x (out[0]=0x%llx)\n", sel, kr, scalarOut[0]];
+                }
+                scalarOutCnt = 8;
+            }
+            IOServiceClose(conn);
+        } else {
+            [log appendFormat:@"[-] Cannot open IOSurfaceRoot: 0x%x\n", kr];
+        }
+        IOObjectRelease(surfaceRoot);
+    }
+
+    // AppleJPEGDriver probing
+    [log appendString:@"\n[*] Probing AppleJPEGDriver...\n"];
+    io_service_t jpegDriver = IOServiceGetMatchingService(masterPort, IOServiceMatching("AppleJPEGDriver"));
+    if (jpegDriver != IO_OBJECT_NULL) {
+        [log appendFormat:@"[+] Found AppleJPEGDriver: 0x%x\n", jpegDriver];
+
+        io_connect_t conn;
+        kern_return_t kr = IOServiceOpen(jpegDriver, mach_task_self(), 0, &conn);
+        if (kr == KERN_SUCCESS) {
+            [log appendFormat:@"[!] Opened AppleJPEGDriver: 0x%x\n", conn];
+            IOServiceClose(conn);
+        } else {
+            [log appendFormat:@"[-] Cannot open: 0x%x\n", kr];
+        }
+        IOObjectRelease(jpegDriver);
+    } else {
+        [log appendString:@"[-] AppleJPEGDriver not found\n"];
+    }
+
+    // AGXAccelerator (GPU)
+    [log appendString:@"\n[*] Probing AGXAccelerator...\n"];
+    io_service_t agx = IOServiceGetMatchingService(masterPort, IOServiceMatching("AGXAccelerator"));
+    if (agx != IO_OBJECT_NULL) {
+        [log appendFormat:@"[+] Found AGXAccelerator: 0x%x\n", agx];
+
+        // Try different user client types
+        for (uint32_t type = 0; type < 5; type++) {
+            io_connect_t conn;
+            kern_return_t kr = IOServiceOpen(agx, mach_task_self(), type, &conn);
+            if (kr == KERN_SUCCESS) {
+                [log appendFormat:@"[!] Opened type %u: 0x%x\n", type, conn];
+                IOServiceClose(conn);
+            }
+        }
+        IOObjectRelease(agx);
+    }
+
+    [log appendString:@"\n[*] IOKit advanced exploitation complete\n"];
+    return log;
+}
+
+#pragma mark - XPC Message Fuzzing
+
++ (NSString *)runXPCFuzzing {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== XPC Message Fuzzing ===\n\n"];
+
+    load_xpc_symbols();
+    if (!xpc_loaded) {
+        [log appendString:@"[-] XPC symbols not available\n"];
+        return log;
+    }
+
+    // Services to fuzz
+    NSArray *targets = @[
+        @"com.apple.cfprefsd.agent",
+        @"com.apple.lsd.mapdb",
+        @"com.apple.coreservices.launchservicesd"
+    ];
+
+    for (NSString *service in targets) {
+        [log appendFormat:@"\n[*] Fuzzing %@...\n", service];
+
+        xpc_connection_t conn = _xpc_connection_create_mach_service(
+            [service UTF8String], NULL, 0);
+
+        if (!conn) {
+            [log appendFormat:@"[-] Cannot connect\n"];
+            continue;
+        }
+
+        __block int responses = 0;
+        _xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+            responses++;
+        });
+        _xpc_connection_resume(conn);
+
+        // Test 1: Empty message
+        xpc_object_t msg1 = _xpc_dictionary_create(NULL, NULL, 0);
+        _xpc_connection_send_message(conn, msg1);
+        [log appendString:@"    [+] Sent empty message\n"];
+
+        // Test 2: Large key
+        xpc_object_t msg2 = _xpc_dictionary_create(NULL, NULL, 0);
+        char largeKey[1024];
+        memset(largeKey, 'A', 1023);
+        largeKey[1023] = 0;
+        _xpc_dictionary_set_string(msg2, largeKey, "test");
+        _xpc_connection_send_message(conn, msg2);
+        [log appendString:@"    [+] Sent large key message\n"];
+
+        // Test 3: Type confusion - set int where string expected
+        xpc_object_t msg3 = _xpc_dictionary_create(NULL, NULL, 0);
+        _xpc_dictionary_set_int64(msg3, "path", 0x4141414141414141);
+        _xpc_dictionary_set_int64(msg3, "command", -1);
+        _xpc_connection_send_message(conn, msg3);
+        [log appendString:@"    [+] Sent type confusion message\n"];
+
+        // Test 4: Nested arrays
+        xpc_object_t msg4 = _xpc_dictionary_create(NULL, NULL, 0);
+        xpc_object_t arr = _xpc_array_create(NULL, 0);
+        for (int i = 0; i < 100; i++) {
+            xpc_object_t inner = _xpc_dictionary_create(NULL, NULL, 0);
+            _xpc_dictionary_set_int64(inner, "idx", i);
+            _xpc_array_append_value(arr, inner);
+        }
+        _xpc_dictionary_set_value(msg4, "items", arr);
+        _xpc_connection_send_message(conn, msg4);
+        [log appendString:@"    [+] Sent nested array message\n"];
+
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+        [log appendFormat:@"    Responses: %d\n", responses];
+
+        _xpc_connection_cancel(conn);
+    }
+
+    [log appendString:@"\n[*] XPC fuzzing complete\n"];
+    return log;
+}
+
+#pragma mark - MobileGestalt Queries
+
++ (NSString *)runMobileGestaltQueries {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== MobileGestalt Queries ===\n\n"];
+
+    // Load MobileGestalt
+    void *handle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+    if (!handle) {
+        [log appendFormat:@"[-] Cannot load MobileGestalt: %s\n", dlerror()];
+        return log;
+    }
+
+    // Get MGCopyAnswer
+    CFTypeRef (*MGCopyAnswer)(CFStringRef) = dlsym(handle, "MGCopyAnswer");
+    if (!MGCopyAnswer) {
+        [log appendString:@"[-] MGCopyAnswer not found\n"];
+        dlclose(handle);
+        return log;
+    }
+
+    [log appendString:@"[+] MobileGestalt loaded\n\n"];
+
+    // Interesting keys to query
+    NSArray *keys = @[
+        @"UniqueDeviceID",
+        @"SerialNumber",
+        @"ProductType",
+        @"HardwareModel",
+        @"BuildVersion",
+        @"ProductVersion",
+        @"DeviceName",
+        @"UserAssignedDeviceName",
+        @"MLBSerialNumber",
+        @"UniqueChipID",
+        @"DieId",
+        @"CPUArchitecture",
+        @"DeviceClass",
+        @"ChipID",
+        @"BoardId",
+        @"WifiAddress",
+        @"BluetoothAddress",
+        @"EthernetMacAddress",
+        @"FirmwareVersion",
+        @"BasebandSerialNumber",
+        @"BasebandChipId",
+        @"CarrierBundleInfoArray",
+        @"RegionalBehaviorNTSC",
+        @"SIMTrayStatus",
+        @"InternalBuild",
+        @"DeviceSupportsApplePay",
+        @"HasSEP",
+        @"SEPNonce",
+        @"PasswordProtected",
+        @"DeviceEnclosureColor",
+        @"ArtworkDeviceIdiom",
+        @"DeviceSupportsFaceTime",
+        @"DeviceSupports1080p",
+        @"DeviceSupports720p"
+    ];
+
+    for (NSString *key in keys) {
+        CFTypeRef value = MGCopyAnswer((__bridge CFStringRef)key);
+        if (value) {
+            NSString *desc = [(__bridge id)value description];
+            if (desc.length > 50) {
+                desc = [[desc substringToIndex:47] stringByAppendingString:@"..."];
+            }
+            [log appendFormat:@"[+] %@: %@\n", key, desc];
+            CFRelease(value);
+        } else {
+            [log appendFormat:@"[-] %@: (null)\n", key];
+        }
+    }
+
+    dlclose(handle);
+    [log appendString:@"\n[*] MobileGestalt queries complete\n"];
+    return log;
+}
+
+#pragma mark - SpringBoard Interaction
+
++ (NSString *)runSpringBoardInteraction {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== SpringBoard Interaction ===\n\n"];
+
+    // Load SpringBoardServices
+    void *sbsHandle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+    if (!sbsHandle) {
+        [log appendFormat:@"[-] Cannot load SpringBoardServices: %s\n", dlerror()];
+    } else {
+        [log appendString:@"[+] SpringBoardServices loaded\n"];
+
+        // Try to get display identifiers
+        CFArrayRef (*SBSCopyApplicationDisplayIdentifiers)(BOOL, BOOL) =
+            dlsym(sbsHandle, "SBSCopyApplicationDisplayIdentifiers");
+        if (SBSCopyApplicationDisplayIdentifiers) {
+            CFArrayRef apps = SBSCopyApplicationDisplayIdentifiers(NO, NO);
+            if (apps) {
+                [log appendFormat:@"[+] Found %ld installed apps\n", CFArrayGetCount(apps)];
+                NSArray *appList = (__bridge NSArray *)apps;
+                for (int i = 0; i < MIN(10, (int)appList.count); i++) {
+                    [log appendFormat:@"    - %@\n", appList[i]];
+                }
+                if (appList.count > 10) {
+                    [log appendFormat:@"    ... and %lu more\n", (unsigned long)(appList.count - 10)];
+                }
+                CFRelease(apps);
+            }
+        }
+
+        // Get front app
+        mach_port_t (*SBSSpringBoardServerPort)(void) = dlsym(sbsHandle, "SBSSpringBoardServerPort");
+        if (SBSSpringBoardServerPort) {
+            mach_port_t port = SBSSpringBoardServerPort();
+            [log appendFormat:@"[+] SpringBoard port: 0x%x\n", port];
+        }
+
+        dlclose(sbsHandle);
+    }
+
+    // Load FrontBoardServices
+    [log appendString:@"\n[*] Trying FrontBoardServices...\n"];
+    void *fbsHandle = dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
+    if (fbsHandle) {
+        [log appendString:@"[+] FrontBoardServices loaded\n"];
+
+        // Try to get FBSSystemService
+        Class FBSSystemService = NSClassFromString(@"FBSSystemService");
+        if (FBSSystemService) {
+            [log appendString:@"[+] Found FBSSystemService class\n"];
+
+            // List methods
+            unsigned int count;
+            Method *methods = class_copyMethodList(FBSSystemService, &count);
+            [log appendFormat:@"    Methods: %u\n", count];
+            for (unsigned int i = 0; i < MIN(10, count); i++) {
+                SEL sel = method_getName(methods[i]);
+                [log appendFormat:@"    - %@\n", NSStringFromSelector(sel)];
+            }
+            free(methods);
+        }
+
+        dlclose(fbsHandle);
+    }
+
+    // Check LSApplicationProxy
+    [log appendString:@"\n[*] Querying LSApplicationProxy...\n"];
+    Class LSApplicationProxy = NSClassFromString(@"LSApplicationProxy");
+    if (LSApplicationProxy) {
+        SEL selector = NSSelectorFromString(@"applicationProxyForIdentifier:");
+        if ([LSApplicationProxy respondsToSelector:selector]) {
+            // Get info about common apps
+            NSArray *bundleIDs = @[@"com.apple.mobilesafari", @"com.apple.Preferences", @"com.apple.AppStore"];
+            for (NSString *bundleID in bundleIDs) {
+                id proxy = [LSApplicationProxy performSelector:selector withObject:bundleID];
+                if (proxy) {
+                    [log appendFormat:@"[+] %@: found\n", bundleID];
+                    SEL localizedName = NSSelectorFromString(@"localizedName");
+                    if ([proxy respondsToSelector:localizedName]) {
+                        NSString *name = [proxy performSelector:localizedName];
+                        [log appendFormat:@"    Name: %@\n", name];
+                    }
+                }
+            }
+        }
+    }
+
+    [log appendString:@"\n[*] SpringBoard interaction complete\n"];
+    return log;
+}
+
+#pragma mark - Entitlement Probing
+
++ (NSString *)runEntitlementProbing {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== Entitlement Probing ===\n\n"];
+
+    // Test operations that typically require entitlements
+    [log appendString:@"[*] Testing privileged operations...\n\n"];
+
+    // Test 1: Keychain access
+    [log appendString:@"[1] Keychain access:\n"];
+    NSDictionary *keychainQuery = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: @"com.poc.test",
+        (__bridge id)kSecReturnData: @YES,
+        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll
+    };
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)keychainQuery, &result);
+    [log appendFormat:@"    SecItemCopyMatching: %d\n", (int)status];
+
+    // Test 2: Location services
+    [log appendString:@"\n[2] Location services:\n"];
+    Class CLLocationManager = NSClassFromString(@"CLLocationManager");
+    if (CLLocationManager) {
+        SEL authStatus = NSSelectorFromString(@"authorizationStatus");
+        if ([CLLocationManager respondsToSelector:authStatus]) {
+            NSInteger authStat = (NSInteger)[CLLocationManager performSelector:authStatus];
+            [log appendFormat:@"    Authorization status: %ld\n", (long)authStat];
+        }
+    }
+
+    // Test 3: Address book access
+    [log appendString:@"\n[3] Contacts access:\n"];
+    void *abHandle = dlopen("/System/Library/Frameworks/Contacts.framework/Contacts", RTLD_NOW);
+    if (abHandle) {
+        Class CNContactStore = NSClassFromString(@"CNContactStore");
+        if (CNContactStore) {
+            SEL authForType = NSSelectorFromString(@"authorizationStatusForEntityType:");
+            if ([CNContactStore respondsToSelector:authForType]) {
+                // CNEntityTypeContacts = 0
+                NSInteger contactsAuth = ((NSInteger (*)(id, SEL, NSInteger))objc_msgSend)(CNContactStore, authForType, 0);
+                [log appendFormat:@"    Contacts auth: %ld\n", (long)contactsAuth];
+            }
+        }
+        dlclose(abHandle);
+    }
+
+    // Test 4: Camera access
+    [log appendString:@"\n[4] Camera access:\n"];
+    Class AVCaptureDevice = NSClassFromString(@"AVCaptureDevice");
+    if (AVCaptureDevice) {
+        SEL authForMedia = NSSelectorFromString(@"authorizationStatusForMediaType:");
+        if ([AVCaptureDevice respondsToSelector:authForMedia]) {
+            NSInteger videoAuth = ((NSInteger (*)(id, SEL, id))objc_msgSend)(AVCaptureDevice, authForMedia, @"vide");
+            [log appendFormat:@"    Video auth: %ld\n", (long)videoAuth];
+        }
+    }
+
+    // Test 5: Background modes
+    [log appendString:@"\n[5] Background modes:\n"];
+    NSDictionary *infoPlist = [[NSBundle mainBundle] infoDictionary];
+    NSArray *bgModes = infoPlist[@"UIBackgroundModes"];
+    [log appendFormat:@"    Declared modes: %@\n", bgModes ?: @"none"];
+
+    // Test 6: App groups
+    [log appendString:@"\n[6] App groups:\n"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *testGroups = @[@"group.com.apple.test", @"group.com.test.shared"];
+    for (NSString *group in testGroups) {
+        NSURL *url = [fm containerURLForSecurityApplicationGroupIdentifier:group];
+        if (url) {
+            [log appendFormat:@"    [!] %@: accessible\n", group];
+        } else {
+            [log appendFormat:@"    [-] %@: not accessible\n", group];
+        }
+    }
+
+    // Test 7: URL schemes
+    [log appendString:@"\n[7] URL scheme access:\n"];
+    NSArray *schemes = @[@"tel://", @"sms://", @"mailto://", @"facetime://", @"prefs://"];
+    for (NSString *scheme in schemes) {
+        NSURL *url = [NSURL URLWithString:[scheme stringByAppendingString:@"test"]];
+        BOOL canOpen = [[UIApplication sharedApplication] canOpenURL:url];
+        [log appendFormat:@"    %@ %@\n", scheme, canOpen ? @"YES" : @"NO"];
+    }
+
+    // Test 8: Network extension
+    [log appendString:@"\n[8] Network extension:\n"];
+    void *neHandle = dlopen("/System/Library/Frameworks/NetworkExtension.framework/NetworkExtension", RTLD_NOW);
+    if (neHandle) {
+        Class NEVPNManager = NSClassFromString(@"NEVPNManager");
+        if (NEVPNManager) {
+            [log appendString:@"    NEVPNManager available\n"];
+            SEL sharedManager = NSSelectorFromString(@"sharedManager");
+            if ([NEVPNManager respondsToSelector:sharedManager]) {
+                id mgr = [NEVPNManager performSelector:sharedManager];
+                [log appendFormat:@"    Shared manager: %@\n", mgr ? @"obtained" : @"nil"];
+            }
+        }
+        dlclose(neHandle);
+    }
+
+    [log appendString:@"\n[*] Entitlement probing complete\n"];
+    return log;
+}
+
 @end
 
 #pragma mark - View Controller
@@ -988,6 +1464,11 @@ static void load_xpc_symbols(void) {
         @{@"title": @"Kernel Info", @"desc": @"Mach port & task info leaks"},
         @{@"title": @"FD Tricks", @"desc": @"File descriptor exploits"},
         @{@"title": @"XPC Scan", @"desc": @"System XPC service probing"},
+        @{@"title": @"IOKit Advanced", @"desc": @"AppleKeyStore, IOSurface, AGX"},
+        @{@"title": @"XPC Fuzzing", @"desc": @"Malformed message testing"},
+        @{@"title": @"MobileGestalt", @"desc": @"Device info enumeration"},
+        @{@"title": @"SpringBoard", @"desc": @"App list & interaction"},
+        @{@"title": @"Entitlements", @"desc": @"Privileged operation testing"},
         @{@"title": @"Run All Tests", @"desc": @"Execute all exploits"}
     ];
     
@@ -1083,7 +1564,22 @@ static void load_xpc_symbols(void) {
             case 10:
                 result = [ExploitEngine runXPCServiceScan];
                 break;
-            case 11: {
+            case 11:
+                result = [ExploitEngine runIOKitAdvancedExploit];
+                break;
+            case 12:
+                result = [ExploitEngine runXPCFuzzing];
+                break;
+            case 13:
+                result = [ExploitEngine runMobileGestaltQueries];
+                break;
+            case 14:
+                result = [ExploitEngine runSpringBoardInteraction];
+                break;
+            case 15:
+                result = [ExploitEngine runEntitlementProbing];
+                break;
+            case 16: {
                 NSMutableString *all = [NSMutableString string];
                 [all appendString:[ExploitEngine getSystemInfo]];
                 [all appendString:@"\n\n"];
@@ -1106,6 +1602,16 @@ static void load_xpc_symbols(void) {
                 [all appendString:[ExploitEngine runFileDescriptorTricks]];
                 [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runXPCServiceScan]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runIOKitAdvancedExploit]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runXPCFuzzing]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runMobileGestaltQueries]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runSpringBoardInteraction]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runEntitlementProbing]];
                 result = all;
                 break;
             }
