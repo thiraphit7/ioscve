@@ -126,6 +126,13 @@ static void load_xpc_symbols(void) {
 + (NSString *)runXPCTargetedFuzz;
 + (NSString *)runCrashOracle;
 
+// Advanced bruteforce and monitoring methods
++ (NSString *)runIOKitSelectorBruteforce;
++ (NSString *)runAGXMethodEnumerator;
++ (NSString *)runAppleKeyStoreDeepProbe;
++ (NSString *)runXPCStructureFuzzer;
++ (NSString *)runCrashMonitor;
+
 @end
 
 @implementation ExploitEngine
@@ -2075,6 +2082,611 @@ static void load_xpc_symbols(void) {
     return log;
 }
 
+#pragma mark - IOKit Selector Bruteforcer
+
++ (NSString *)runIOKitSelectorBruteforce {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== IOKit Selector Bruteforce ===\n\n"];
+
+    // Target drivers for selector bruteforcing
+    const char *drivers[] = {
+        "IOSurfaceRoot",
+        "AppleKeyStore",
+        "AGXAccelerator",
+        "IOHIDSystem",
+        "AppleSPU",
+        "AppleAVE2",
+        "AppleJPEGDriver",
+        "IOAudioEngine",
+        "AppleMobileFileIntegrity",
+        "AppleCredentialManager"
+    };
+    int numDrivers = sizeof(drivers) / sizeof(drivers[0]);
+
+    for (int d = 0; d < numDrivers; d++) {
+        io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
+            IOServiceMatching(drivers[d]));
+
+        if (!service) {
+            [log appendFormat:@"[%s] Not found\n", drivers[d]];
+            continue;
+        }
+
+        io_connect_t conn = 0;
+        kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+        IOObjectRelease(service);
+
+        if (kr != KERN_SUCCESS) {
+            [log appendFormat:@"[%s] Open failed: 0x%x\n", drivers[d], kr];
+            continue;
+        }
+
+        [log appendFormat:@"\n[%s] Connected, scanning selectors 0-200:\n", drivers[d]];
+
+        NSMutableArray *validSelectors = [NSMutableArray array];
+
+        // Bruteforce selectors 0-200
+        for (uint32_t sel = 0; sel <= 200; sel++) {
+            uint64_t input[8] = {0};
+            uint64_t output[8] = {0};
+            uint32_t outputCnt = 8;
+
+            kr = IOConnectCallScalarMethod(conn, sel, input, 0, output, &outputCnt);
+
+            // Valid selector returns something other than MIG_BAD_ID
+            if (kr != 0xe00002c2 && kr != 0xe00002f2) {
+                [validSelectors addObject:@{
+                    @"sel": @(sel),
+                    @"kr": @(kr),
+                    @"out0": @(output[0])
+                }];
+            }
+        }
+
+        [log appendFormat:@"    Found %lu valid selectors:\n", (unsigned long)validSelectors.count];
+        for (NSDictionary *s in validSelectors) {
+            [log appendFormat:@"      sel=%u kr=0x%x out[0]=0x%llx\n",
+                [s[@"sel"] unsignedIntValue],
+                [s[@"kr"] unsignedIntValue],
+                [s[@"out0"] unsignedLongLongValue]];
+        }
+
+        IOServiceClose(conn);
+    }
+
+    [log appendString:@"\n[*] Selector bruteforce complete\n"];
+    return log;
+}
+
+#pragma mark - AGX Method Enumerator
+
++ (NSString *)runAGXMethodEnumerator {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== AGX GPU Driver Method Enumerator ===\n\n"];
+
+    // AGX-specific driver classes
+    const char *agxDrivers[] = {
+        "AGXAccelerator",
+        "AGXDevice",
+        "AGXSharedUserClient",
+        "AGXCommandQueue",
+        "AGXMetal",
+        "AGXG13G",
+        "AGXG14G",
+        "AGXG15G",
+        "IOGPUDevice",
+        "IOGPUDeviceUserClient"
+    };
+    int numDrivers = sizeof(agxDrivers) / sizeof(agxDrivers[0]);
+
+    for (int d = 0; d < numDrivers; d++) {
+        io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
+            IOServiceMatching(agxDrivers[d]));
+
+        if (!service) {
+            [log appendFormat:@"[%s] Not present\n", agxDrivers[d]];
+            continue;
+        }
+
+        [log appendFormat:@"\n[%s] Found!\n", agxDrivers[d]];
+
+        // Get service properties
+        CFMutableDictionaryRef props = NULL;
+        kern_return_t kr = IORegistryEntryCreateCFProperties(service, &props,
+            kCFAllocatorDefault, 0);
+
+        if (kr == KERN_SUCCESS && props) {
+            NSDictionary *dict = (__bridge_transfer NSDictionary *)props;
+            [log appendFormat:@"  Properties: %lu keys\n", (unsigned long)dict.count];
+
+            // Look for interesting keys
+            for (NSString *key in dict.allKeys) {
+                if ([key containsString:@"Method"] ||
+                    [key containsString:@"Selector"] ||
+                    [key containsString:@"External"]) {
+                    [log appendFormat:@"    %@: %@\n", key, dict[key]];
+                }
+            }
+        }
+
+        // Try different user client types
+        [log appendFormat:@"  Testing user client types:\n"];
+        for (uint32_t type = 0; type < 10; type++) {
+            io_connect_t conn = 0;
+            kr = IOServiceOpen(service, mach_task_self(), type, &conn);
+
+            if (kr == KERN_SUCCESS) {
+                [log appendFormat:@"    Type %u: Connected!\n", type];
+
+                // Probe first 50 selectors
+                int validCount = 0;
+                for (uint32_t sel = 0; sel < 50; sel++) {
+                    uint64_t out[4] = {0};
+                    uint32_t outCnt = 4;
+                    kr = IOConnectCallScalarMethod(conn, sel, NULL, 0, out, &outCnt);
+                    if (kr != 0xe00002c2) {
+                        validCount++;
+                    }
+                }
+                [log appendFormat:@"      Valid selectors (0-49): %d\n", validCount];
+
+                IOServiceClose(conn);
+            }
+        }
+
+        IOObjectRelease(service);
+    }
+
+    // Check for GPU-related symbols
+    [log appendString:@"\n[GPU Symbols]\n"];
+    void *metal = dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_NOW);
+    if (metal) {
+        const char *symbols[] = {
+            "MTLCreateSystemDefaultDevice",
+            "MTLCopyAllDevices",
+            "_MTLDeviceGetGPUFamily"
+        };
+        for (int i = 0; i < 3; i++) {
+            void *sym = dlsym(metal, symbols[i]);
+            [log appendFormat:@"  %s: %p\n", symbols[i], sym];
+        }
+    }
+
+    [log appendString:@"\n[*] AGX enumeration complete\n"];
+    return log;
+}
+
+#pragma mark - AppleKeyStore Deep Probe
+
++ (NSString *)runAppleKeyStoreDeepProbe {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== AppleKeyStore Deep Crypto Probe ===\n\n"];
+
+    io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
+        IOServiceMatching("AppleKeyStore"));
+
+    if (!service) {
+        [log appendString:@"[-] AppleKeyStore not found\n"];
+        return log;
+    }
+
+    io_connect_t conn = 0;
+    kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
+    IOObjectRelease(service);
+
+    if (kr != KERN_SUCCESS) {
+        [log appendFormat:@"[-] Open failed: 0x%x\n", kr];
+        return log;
+    }
+
+    [log appendString:@"[+] Connected to AppleKeyStore\n\n"];
+
+    // Known AppleKeyStore selectors
+    struct {
+        uint32_t sel;
+        const char *name;
+    } selectors[] = {
+        {0, "kAppleKeyStoreGetUserClient"},
+        {1, "kAppleKeyStoreGetSystemKey"},
+        {2, "kAppleKeyStoreGenerateKey"},
+        {3, "kAppleKeyStoreWrapKey"},
+        {4, "kAppleKeyStoreUnwrapKey"},
+        {5, "kAppleKeyStoreDeleteKey"},
+        {6, "kAppleKeyStoreGetKeyInfo"},
+        {10, "kAppleKeyStoreKeyBagCreate"},
+        {11, "kAppleKeyStoreKeyBagGetState"},
+        {12, "kAppleKeyStoreKeyBagUnlock"},
+        {13, "kAppleKeyStoreKeyBagLock"},
+        {14, "kAppleKeyStoreKeyBagDelete"},
+        {16, "kAppleKeyStoreGetPasscodeGeneration"},
+        {20, "kAppleKeyStoreCryptoOp"},
+        {21, "kAppleKeyStoreGetSEPOS"},
+        {22, "kAppleKeyStoreGetSEPNonce"},
+        {30, "kAppleKeyStoreWrapData"},
+        {31, "kAppleKeyStoreUnwrapData"}
+    };
+    int numSels = sizeof(selectors) / sizeof(selectors[0]);
+
+    [log appendString:@"[1] Testing known selectors:\n"];
+    for (int i = 0; i < numSels; i++) {
+        uint64_t input[8] = {0};
+        uint64_t output[8] = {0};
+        uint32_t outputCnt = 8;
+
+        kr = IOConnectCallScalarMethod(conn, selectors[i].sel, input, 0, output, &outputCnt);
+
+        [log appendFormat:@"    [%2u] %s: 0x%x",
+            selectors[i].sel, selectors[i].name, kr];
+
+        if (kr == KERN_SUCCESS) {
+            [log appendFormat:@" -> out[0]=0x%llx\n", output[0]];
+        } else if (kr == 0xe00002c2) {
+            [log appendString:@" (invalid)\n"];
+        } else {
+            [log appendString:@"\n"];
+        }
+    }
+
+    // Test structured methods
+    [log appendString:@"\n[2] Testing structured input methods:\n"];
+
+    // Try keybag query with structured input
+    struct {
+        uint32_t version;
+        uint32_t keybag_id;
+        uint8_t padding[24];
+    } keybagQuery = {1, 0, {0}};
+
+    uint8_t keybagOutput[256] = {0};
+    size_t keybagOutSize = sizeof(keybagOutput);
+
+    kr = IOConnectCallStructMethod(conn, 11, &keybagQuery, sizeof(keybagQuery),
+        keybagOutput, &keybagOutSize);
+    [log appendFormat:@"    KeyBagGetState: 0x%x (outSize=%zu)\n", kr, keybagOutSize];
+
+    // Try crypto operation
+    struct {
+        uint32_t op_type;
+        uint32_t key_class;
+        uint32_t key_id;
+        uint8_t data[32];
+    } cryptoOp = {0, 0, 0, {0}};
+
+    uint8_t cryptoOutput[128] = {0};
+    size_t cryptoOutSize = sizeof(cryptoOutput);
+
+    kr = IOConnectCallStructMethod(conn, 20, &cryptoOp, sizeof(cryptoOp),
+        cryptoOutput, &cryptoOutSize);
+    [log appendFormat:@"    CryptoOp: 0x%x (outSize=%zu)\n", kr, cryptoOutSize];
+
+    // SEP queries
+    [log appendString:@"\n[3] SEP information queries:\n"];
+
+    for (uint32_t sel = 21; sel <= 25; sel++) {
+        uint8_t sepOutput[256] = {0};
+        size_t sepOutSize = sizeof(sepOutput);
+
+        kr = IOConnectCallStructMethod(conn, sel, NULL, 0, sepOutput, &sepOutSize);
+        [log appendFormat:@"    Selector %u: 0x%x (outSize=%zu)\n", sel, kr, sepOutSize];
+
+        if (kr == KERN_SUCCESS && sepOutSize > 0) {
+            [log appendString:@"      Data: "];
+            for (size_t i = 0; i < MIN(16, sepOutSize); i++) {
+                [log appendFormat:@"%02x", sepOutput[i]];
+            }
+            [log appendString:@"...\n"];
+        }
+    }
+
+    IOServiceClose(conn);
+
+    [log appendString:@"\n[*] AppleKeyStore deep probe complete\n"];
+    return log;
+}
+
+#pragma mark - XPC Structure Fuzzer
+
++ (NSString *)runXPCStructureFuzzer {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== XPC Structure Fuzzer ===\n\n"];
+
+    load_xpc_symbols();
+
+    if (!xpc_loaded) {
+        [log appendString:@"[-] XPC symbols not available\n"];
+        return log;
+    }
+
+    // Additional XPC function pointers for fuzzing
+    xpc_object_t (*_xpc_data_create)(const void *, size_t) = dlsym(RTLD_DEFAULT, "xpc_data_create");
+    xpc_object_t (*_xpc_string_create)(const char *) = dlsym(RTLD_DEFAULT, "xpc_string_create");
+    xpc_object_t (*_xpc_bool_create)(bool) = dlsym(RTLD_DEFAULT, "xpc_bool_create");
+    xpc_object_t (*_xpc_uint64_create)(uint64_t) = dlsym(RTLD_DEFAULT, "xpc_uint64_create");
+    xpc_object_t (*_xpc_null_create)(void) = dlsym(RTLD_DEFAULT, "xpc_null_create");
+    xpc_object_t (*_xpc_uuid_create)(const uuid_t) = dlsym(RTLD_DEFAULT, "xpc_uuid_create");
+    void (*_xpc_release)(xpc_object_t) = dlsym(RTLD_DEFAULT, "xpc_release");
+
+    const char *services[] = {
+        "com.apple.installd",
+        "com.apple.securityd",
+        "com.apple.tccd",
+        "com.apple.lsd.mapdb",
+        "com.apple.coreservices.launchservicesd"
+    };
+    int numServices = sizeof(services) / sizeof(services[0]);
+
+    // Mutation strategies
+    [log appendString:@"[Mutation Strategies]\n"];
+    [log appendString:@"  1. Type confusion (string -> data)\n"];
+    [log appendString:@"  2. Length overflow\n"];
+    [log appendString:@"  3. NULL injection\n"];
+    [log appendString:@"  4. Nested structures\n"];
+    [log appendString:@"  5. Invalid UTF-8\n\n"];
+
+    for (int s = 0; s < numServices; s++) {
+        [log appendFormat:@"\n[Testing %s]\n", services[s]];
+
+        xpc_connection_t conn = _xpc_connection_create_mach_service(
+            services[s], NULL, 0);
+
+        if (!conn) {
+            [log appendString:@"  Failed to create connection\n"];
+            continue;
+        }
+
+        __block int responseCount = 0;
+        __block int errorCount = 0;
+
+        _xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+            void *type = _xpc_get_type(event);
+            if (type == _XPC_TYPE_ERROR) {
+                errorCount++;
+            } else {
+                responseCount++;
+            }
+        });
+
+        _xpc_connection_resume(conn);
+
+        // Fuzz case 1: Oversized data
+        if (_xpc_data_create) {
+            uint8_t largeData[4096];
+            memset(largeData, 'A', sizeof(largeData));
+
+            xpc_object_t msg = _xpc_dictionary_create(NULL, NULL, 0);
+            xpc_object_t data = _xpc_data_create(largeData, sizeof(largeData));
+            _xpc_dictionary_set_value(msg, "payload", data);
+            _xpc_connection_send_message(conn, msg);
+            if (_xpc_release) {
+                _xpc_release(data);
+                _xpc_release(msg);
+            }
+        }
+
+        // Fuzz case 2: Deeply nested dictionary
+        if (_xpc_dictionary_create) {
+            xpc_object_t outer = _xpc_dictionary_create(NULL, NULL, 0);
+            xpc_object_t current = outer;
+
+            for (int depth = 0; depth < 50; depth++) {
+                xpc_object_t inner = _xpc_dictionary_create(NULL, NULL, 0);
+                _xpc_dictionary_set_value(current, "nested", inner);
+                current = inner;
+            }
+            _xpc_dictionary_set_string(current, "deep_key", "deep_value");
+            _xpc_connection_send_message(conn, outer);
+            if (_xpc_release) _xpc_release(outer);
+        }
+
+        // Fuzz case 3: Invalid UTF-8 strings
+        if (_xpc_string_create) {
+            const char *badStrings[] = {
+                "\xff\xfe",
+                "\x80\x81\x82",
+                "\xc0\xc1",
+                "test\x00hidden",
+            };
+
+            for (int i = 0; i < 4; i++) {
+                xpc_object_t msg = _xpc_dictionary_create(NULL, NULL, 0);
+                _xpc_dictionary_set_string(msg, "key", badStrings[i]);
+                _xpc_connection_send_message(conn, msg);
+                if (_xpc_release) _xpc_release(msg);
+            }
+        }
+
+        // Fuzz case 4: Large integer values
+        if (_xpc_uint64_create) {
+            uint64_t extremeVals[] = {
+                0, 1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
+                0x8000000000000000, 0x7FFFFFFFFFFFFFFF
+            };
+
+            for (int i = 0; i < 6; i++) {
+                xpc_object_t msg = _xpc_dictionary_create(NULL, NULL, 0);
+                _xpc_dictionary_set_int64(msg, "count", extremeVals[i]);
+                _xpc_connection_send_message(conn, msg);
+                if (_xpc_release) _xpc_release(msg);
+            }
+        }
+
+        // Give time for responses
+        usleep(100000);
+
+        [log appendFormat:@"  Responses: %d, Errors: %d\n", responseCount, errorCount];
+
+        _xpc_connection_cancel(conn);
+    }
+
+    [log appendString:@"\n[*] XPC structure fuzzing complete\n"];
+    return log;
+}
+
+#pragma mark - Crash Monitor
+
++ (NSString *)runCrashMonitor {
+    NSMutableString *log = [NSMutableString string];
+    [log appendString:@"=== Crash Monitor ===\n\n"];
+
+    // Check crash log directories
+    [log appendString:@"[1] Crash Log Locations:\n"];
+
+    NSArray *crashDirs = @[
+        @"/var/mobile/Library/Logs/CrashReporter",
+        @"/var/logs/CrashReporter",
+        @"/private/var/mobile/Library/Logs/CrashReporter",
+        @"/Library/Logs/CrashReporter"
+    ];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    for (NSString *dir in crashDirs) {
+        BOOL isDir;
+        if ([fm fileExistsAtPath:dir isDirectory:&isDir] && isDir) {
+            NSArray *files = [fm contentsOfDirectoryAtPath:dir error:nil];
+            [log appendFormat:@"  %@: %lu files\n", dir, (unsigned long)files.count];
+
+            // List recent crash files
+            NSArray *sortedFiles = [files sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+                return [b compare:a];
+            }];
+
+            int shown = 0;
+            for (NSString *file in sortedFiles) {
+                if ([file hasSuffix:@".ips"] || [file hasSuffix:@".crash"] ||
+                    [file hasSuffix:@".panic"]) {
+                    [log appendFormat:@"    - %@\n", file];
+                    if (++shown >= 5) break;
+                }
+            }
+        } else {
+            [log appendFormat:@"  %@: Not accessible\n", dir];
+        }
+    }
+
+    // Monitor kernel panic indicators
+    [log appendString:@"\n[2] Kernel Panic Indicators:\n"];
+
+    // Check nvram for panic info
+    io_registry_entry_t optionsRef = IORegistryEntryFromPath(kIOMasterPortDefault,
+        "IODeviceTree:/options");
+
+    if (optionsRef) {
+        CFTypeRef panicInfo = IORegistryEntryCreateCFProperty(optionsRef,
+            CFSTR("boot-args"), kCFAllocatorDefault, 0);
+
+        if (panicInfo) {
+            [log appendFormat:@"  boot-args: %@\n", panicInfo];
+            CFRelease(panicInfo);
+        }
+
+        CFTypeRef prevPanic = IORegistryEntryCreateCFProperty(optionsRef,
+            CFSTR("SystemAudioVolume"), kCFAllocatorDefault, 0);
+        if (prevPanic) {
+            [log appendString:@"  Previous panic data present\n"];
+            CFRelease(prevPanic);
+        }
+
+        IOObjectRelease(optionsRef);
+    }
+
+    // Check sysctl for crash info
+    [log appendString:@"\n[3] System Crash State:\n"];
+
+    int mib[2] = {CTL_KERN, KERN_PROC};
+    size_t size = 0;
+    if (sysctl(mib, 2, NULL, &size, NULL, 0) == 0) {
+        [log appendFormat:@"  Process table size: %zu bytes\n", size];
+    }
+
+    // Check for watchdog indicators
+    char boottime[256] = {0};
+    size = sizeof(boottime);
+    if (sysctlbyname("kern.boottime", boottime, &size, NULL, 0) == 0) {
+        struct timeval *tv = (struct timeval *)boottime;
+        time_t t = tv->tv_sec;
+        [log appendFormat:@"  Boot time: %s", ctime(&t)];
+    }
+
+    // Daemon health check
+    [log appendString:@"\n[4] Critical Daemon Status:\n"];
+
+    const char *daemons[] = {
+        "launchd",
+        "securityd",
+        "installd",
+        "SpringBoard",
+        "tccd",
+        "cfprefsd"
+    };
+    int numDaemons = sizeof(daemons) / sizeof(daemons[0]);
+
+    int mib_proc[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t proc_size;
+
+    if (sysctl(mib_proc, 3, NULL, &proc_size, NULL, 0) == 0) {
+        struct kinfo_proc *procs = malloc(proc_size);
+        if (procs && sysctl(mib_proc, 3, procs, &proc_size, NULL, 0) == 0) {
+            int numProcs = (int)(proc_size / sizeof(struct kinfo_proc));
+
+            for (int d = 0; d < numDaemons; d++) {
+                BOOL found = NO;
+                for (int p = 0; p < numProcs; p++) {
+                    if (strstr(procs[p].kp_proc.p_comm, daemons[d])) {
+                        [log appendFormat:@"  %s: running (pid=%d)\n",
+                            daemons[d], procs[p].kp_proc.p_pid];
+                        found = YES;
+                        break;
+                    }
+                }
+                if (!found) {
+                    [log appendFormat:@"  %s: NOT FOUND\n", daemons[d]];
+                }
+            }
+        }
+        free(procs);
+    }
+
+    // Exception port monitoring setup
+    [log appendString:@"\n[5] Exception Port Configuration:\n"];
+
+    exception_mask_t masks[EXC_TYPES_COUNT];
+    mach_msg_type_number_t maskCount = EXC_TYPES_COUNT;
+    exception_handler_t handlers[EXC_TYPES_COUNT];
+    exception_behavior_t behaviors[EXC_TYPES_COUNT];
+    thread_state_flavor_t flavors[EXC_TYPES_COUNT];
+
+    kern_return_t kr = task_get_exception_ports(mach_task_self(),
+        EXC_MASK_ALL, masks, &maskCount, handlers, behaviors, flavors);
+
+    if (kr == KERN_SUCCESS) {
+        [log appendFormat:@"  Exception ports registered: %u\n", maskCount];
+        for (mach_msg_type_number_t i = 0; i < maskCount; i++) {
+            [log appendFormat:@"    Mask 0x%x -> port 0x%x\n", masks[i], handlers[i]];
+        }
+    }
+
+    // Signal handler status
+    [log appendString:@"\n[6] Signal Handlers:\n"];
+
+    int signals[] = {SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL, SIGTRAP};
+    const char *sigNames[] = {"SIGSEGV", "SIGBUS", "SIGABRT", "SIGFPE", "SIGILL", "SIGTRAP"};
+
+    for (int i = 0; i < 6; i++) {
+        struct sigaction sa;
+        sigaction(signals[i], NULL, &sa);
+
+        const char *handlerType = "default";
+        if (sa.sa_handler == SIG_IGN) handlerType = "ignored";
+        else if (sa.sa_handler != SIG_DFL) handlerType = "custom";
+
+        [log appendFormat:@"  %s: %s\n", sigNames[i], handlerType];
+    }
+
+    [log appendString:@"\n[*] Crash monitoring complete\n"];
+    return log;
+}
+
 @end
 
 #pragma mark - View Controller
@@ -2116,6 +2728,11 @@ static void load_xpc_symbols(void) {
         @{@"title": @"IOSurface Mem", @"desc": @"Surface creation & mapping"},
         @{@"title": @"XPC Target Fuzz", @"desc": @"installd/securityd/tccd fuzzing"},
         @{@"title": @"Crash Oracle", @"desc": @"Crash pattern detection"},
+        @{@"title": @"IOKit Bruteforce", @"desc": @"Find all valid selectors"},
+        @{@"title": @"AGX Enumerator", @"desc": @"GPU driver method scan"},
+        @{@"title": @"KeyStore Deep", @"desc": @"Crypto operations probe"},
+        @{@"title": @"XPC Struct Fuzz", @"desc": @"Message content mutation"},
+        @{@"title": @"Crash Monitor", @"desc": @"Kernel panic detection"},
         @{@"title": @"Run All Tests", @"desc": @"Execute all exploits"}
     ];
     
@@ -2244,7 +2861,22 @@ static void load_xpc_symbols(void) {
             case 21:
                 result = [ExploitEngine runCrashOracle];
                 break;
-            case 22: {
+            case 22:
+                result = [ExploitEngine runIOKitSelectorBruteforce];
+                break;
+            case 23:
+                result = [ExploitEngine runAGXMethodEnumerator];
+                break;
+            case 24:
+                result = [ExploitEngine runAppleKeyStoreDeepProbe];
+                break;
+            case 25:
+                result = [ExploitEngine runXPCStructureFuzzer];
+                break;
+            case 26:
+                result = [ExploitEngine runCrashMonitor];
+                break;
+            case 27: {
                 NSMutableString *all = [NSMutableString string];
                 [all appendString:[ExploitEngine getSystemInfo]];
                 [all appendString:@"\n\n"];
@@ -2289,6 +2921,16 @@ static void load_xpc_symbols(void) {
                 [all appendString:[ExploitEngine runXPCTargetedFuzz]];
                 [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runCrashOracle]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runIOKitSelectorBruteforce]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runAGXMethodEnumerator]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runAppleKeyStoreDeepProbe]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runXPCStructureFuzzer]];
+                [all appendString:@"\n\n"];
+                [all appendString:[ExploitEngine runCrashMonitor]];
                 result = all;
                 break;
             }
