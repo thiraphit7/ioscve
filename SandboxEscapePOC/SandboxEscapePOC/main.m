@@ -22,8 +22,10 @@
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <sys/fcntl.h>
+#import <sys/mman.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <errno.h>
 
 // XPC - always available on iOS
 #import <xpc/xpc.h>
@@ -493,16 +495,9 @@
     NSMutableString *log = [NSMutableString string];
     [log appendString:@"=== IOKit Service Probing ===\n\n"];
 
-    // Get IOKit master port
-    mach_port_t masterPort;
-    kern_return_t kr = IOMasterPort(MACH_PORT_NULL, &masterPort);
-
-    if (kr == KERN_SUCCESS) {
-        [log appendFormat:@"[+] Got IOKit master port: 0x%x\n", masterPort];
-    } else {
-        [log appendFormat:@"[-] Failed to get master port: 0x%x\n", kr];
-        return log;
-    }
+    // Use kIOMainPortDefault (IOMasterPort is deprecated)
+    mach_port_t masterPort = kIOMainPortDefault;
+    [log appendFormat:@"[+] Using IOKit main port: 0x%x\n", masterPort];
 
     // Interesting IOKit services to probe
     NSArray *services = @[
@@ -682,16 +677,16 @@
     // Host info
     [log appendString:@"\n[*] Host information...\n"];
 
-    host_basic_info_data_t host_info;
+    host_basic_info_data_t host_basic_data;
     count = HOST_BASIC_INFO_COUNT;
-    kr = host_info(mach_host_self(), HOST_BASIC_INFO, (host_info_t)&host_info, &count);
+    kr = host_info(mach_host_self(), HOST_BASIC_INFO, (host_info_t)&host_basic_data, &count);
 
     if (kr == KERN_SUCCESS) {
-        [log appendFormat:@"[+] Max CPUs: %d\n", host_info.max_cpus];
-        [log appendFormat:@"[+] Avail CPUs: %d\n", host_info.avail_cpus];
-        [log appendFormat:@"[+] Memory size: %llu MB\n", host_info.max_mem / (1024 * 1024)];
-        [log appendFormat:@"[+] CPU type: 0x%x\n", host_info.cpu_type];
-        [log appendFormat:@"[+] CPU subtype: 0x%x\n", host_info.cpu_subtype];
+        [log appendFormat:@"[+] Max CPUs: %d\n", host_basic_data.max_cpus];
+        [log appendFormat:@"[+] Avail CPUs: %d\n", host_basic_data.avail_cpus];
+        [log appendFormat:@"[+] Memory size: %llu MB\n", host_basic_data.max_mem / (1024 * 1024)];
+        [log appendFormat:@"[+] CPU type: 0x%x\n", host_basic_data.cpu_type];
+        [log appendFormat:@"[+] CPU subtype: 0x%x\n", host_basic_data.cpu_subtype];
     }
 
     // Mach zone info
