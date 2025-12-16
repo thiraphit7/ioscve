@@ -18,8 +18,8 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
 #import <mach/task_info.h>
+#import <mach/vm_map.h>
 #import <CoreSpotlight/CoreSpotlight.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
@@ -2053,12 +2053,12 @@ static void load_xpc_symbols(void) {
     }
 
     // VM operation
-    mach_vm_address_t vmAddr = 0;
-    kr = mach_vm_allocate(mach_task_self(), &vmAddr, 0x1000, VM_FLAGS_ANYWHERE);
+    vm_address_t vmAddr = 0;
+    kr = vm_allocate(mach_task_self(), &vmAddr, 0x1000, VM_FLAGS_ANYWHERE);
     if (kr == KERN_SUCCESS) {
         // Try to write
         memset((void*)vmAddr, 0x42, 0x1000);
-        mach_vm_deallocate(mach_task_self(), vmAddr, 0x1000);
+        vm_deallocate(mach_task_self(), vmAddr, 0x1000);
         [log appendString:@"    VM alloc/write/dealloc: OK\n"];
     }
 
