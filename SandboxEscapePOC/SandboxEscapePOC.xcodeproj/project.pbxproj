@@ -42,7 +42,6 @@
 				1A0000000000000000000012,
 				1A0000000000000000000013,
 			);
-			path = SandboxEscapePOC;
 			sourceTree = "<group>";
 		};
 		1A0000000000000000000102 /* Frameworks */ = {
@@ -169,7 +168,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = entitlements.plist;
 				CODE_SIGN_STYLE = Manual;
-				INFOPLIST_FILE = SandboxEscapePOC/Info.plist;
+				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
