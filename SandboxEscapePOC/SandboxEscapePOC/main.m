@@ -358,10 +358,14 @@
             [log appendFormat:@"[-] Index error: %@\n", error];
         }
     }];
-    
-    // Wait for indexing
-    while (!indexComplete) {
+
+    // Wait for indexing with timeout
+    CFAbsoluteTime timeout = CFAbsoluteTimeGetCurrent() + 10.0; // 10 second timeout
+    while (!indexComplete && CFAbsoluteTimeGetCurrent() < timeout) {
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    }
+    if (!indexComplete) {
+        [log appendString:@"[-] Indexing timed out\n"];
     }
     
     elapsed = CFAbsoluteTimeGetCurrent() - start;
