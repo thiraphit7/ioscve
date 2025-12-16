@@ -26,11 +26,11 @@ APP_DIR="${OUTPUT_DIR}/${APP_NAME}.app"
 echo "[1/5] Copying resources..."
 
 # Copy Info.plist
-cp "SandboxEscapePOC/Info.plist" "${APP_DIR}/"
+cp "SandboxEscapePOC/SandboxEscapePOC/Info.plist" "${APP_DIR}/"
 
 # Copy LaunchScreen if exists
-if [ -f "SandboxEscapePOC/LaunchScreen.storyboard" ]; then
-    cp "SandboxEscapePOC/LaunchScreen.storyboard" "${APP_DIR}/"
+if [ -f "SandboxEscapePOC/SandboxEscapePOC/LaunchScreen.storyboard" ]; then
+    cp "SandboxEscapePOC/SandboxEscapePOC/LaunchScreen.storyboard" "${APP_DIR}/"
 fi
 
 # Create PkgInfo
@@ -38,7 +38,7 @@ echo -n "APPL????" > "${APP_DIR}/PkgInfo"
 
 # Copy source for reference
 mkdir -p "${APP_DIR}/Source"
-cp "SandboxEscapePOC/main.m" "${APP_DIR}/Source/" 2>/dev/null || true
+cp "SandboxEscapePOC/SandboxEscapePOC/main.m" "${APP_DIR}/Source/" 2>/dev/null || true
 
 echo "[2/5] Creating code signature structure..."
 
