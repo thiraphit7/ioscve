@@ -2928,8 +2928,8 @@ static void load_xpc_symbols(void) {
                 [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runXPCTargetedFuzz]];
                 [all appendString:@"\n\n"];
-                [all appendString:[ExploitEngine runCrashOracle]];
-                [all appendString:@"\n\n"];
+#                [all appendString:[ExploitEngine runCrashOracle]];
+#                [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runIOKitSelectorBruteforce]];
                 [all appendString:@"\n\n"];
                 [all appendString:[ExploitEngine runAGXMethodEnumerator]];
