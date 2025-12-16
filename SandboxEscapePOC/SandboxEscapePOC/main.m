@@ -26,6 +26,7 @@
 #import <sys/mman.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <errno.h>
 
 // IOKit
