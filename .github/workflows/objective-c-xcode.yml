@@ -1,0 +1,92 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+env:
+  APP_NAME: SandboxEscapePOC
+  BUNDLE_ID: com.research.sandboxescapepoc
+  MIN_IOS_VERSION: "15.0"
+  XCODE_VERSION: "15.0"
+
+jobs:
+  # Job 1: Build using Xcode on macOS
+  build-xcode:
+    name: Build with Xcode
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Show available SDKs
+        run: xcodebuild -showsdks
+
+      - name: Build iOS App
+        run: |
+          cd SandboxEscapePOC
+          
+          # Build for device (arm64)
+          xcodebuild \
+            -project SandboxEscapePOC.xcodeproj \
+            -scheme SandboxEscapePOC \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            clean build
+
+      - name: Create .app bundle
+        run: |
+          mkdir -p output
+          cp -r SandboxEscapePOC/build/Build/Products/Release-iphoneos/${{ env.APP_NAME }}.app output/
+
+      - name: Package IPA
+        run: |
+          cd output
+          mkdir -p Payload
+          cp -r ${{ env.APP_NAME }}.app Payload/
+          zip -r ${{ env.APP_NAME }}.ipa Payload
+          rm -rf Payload
+          
+          # Show result
+          ls -la
+          file ${{ env.APP_NAME }}.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-xcode-ipa
+          path: output/${{ env.APP_NAME }}.ipa
+          retention-days: 30
+
+      - name: Upload App Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-xcode-app
+          path: output/${{ env.APP_NAME }}.app
+          retention-days: 3
